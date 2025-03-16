@@ -275,22 +275,23 @@ class LipsyncPipeline(DiffusionPipeline):
         faces = torch.stack(faces)
         return faces, boxes, affine_matrices, face_indices, face_detected_mask
 
-    def restore_video(self, faces, video_frames, boxes, affine_matrices):
-        video_frames = video_frames[: faces.shape[0]]
-        out_frames = []
-        print(f"Restoring {len(faces)} faces...")
-        for index, face in enumerate(tqdm.tqdm(faces)):
-            x1, y1, x2, y2 = boxes[index]
-            height = int(y2 - y1)
-            width = int(x2 - x1)
-            face = torchvision.transforms.functional.resize(face, size=(height, width), antialias=True)
-            face = rearrange(face, "c h w -> h w c")
-            face = (face / 2 + 0.5).clamp(0, 1)
-            face = (face * 255).to(torch.uint8).cpu().numpy()
-            # face = cv2.resize(face, (width, height), interpolation=cv2.INTER_LANCZOS4)
-            out_frame = self.image_processor.restorer.restore_img(video_frames[index], face, affine_matrices[index])
-            out_frames.append(out_frame)
-        return np.stack(out_frames, axis=0)
+    # # Replaced by restore_video_with_originals fn to organize no face frames proper processing
+    # def restore_video(self, faces, video_frames, boxes, affine_matrices):
+    #     video_frames = video_frames[: faces.shape[0]]
+    #     out_frames = []
+    #     print(f"Restoring {len(faces)} faces...")
+    #     for index, face in enumerate(tqdm.tqdm(faces)):
+    #         x1, y1, x2, y2 = boxes[index]
+    #         height = int(y2 - y1)
+    #         width = int(x2 - x1)
+    #         face = torchvision.transforms.functional.resize(face, size=(height, width), antialias=True)
+    #         face = rearrange(face, "c h w -> h w c")
+    #         face = (face / 2 + 0.5).clamp(0, 1)
+    #         face = (face * 255).to(torch.uint8).cpu().numpy()
+    #         # face = cv2.resize(face, (width, height), interpolation=cv2.INTER_LANCZOS4)
+    #         out_frame = self.image_processor.restorer.restore_img(video_frames[index], face, affine_matrices[index])
+    #         out_frames.append(out_frame)
+    #     return np.stack(out_frames, axis=0)
 
     def restore_video_with_originals(self, faces, video_frames, boxes, affine_matrices, face_indices):
         processed_faces = []
@@ -351,7 +352,6 @@ class LipsyncPipeline(DiffusionPipeline):
         batch_size = 1
         device = self._execution_device
 
-        # Исправление для device
         device_str = "cuda" if str(device).startswith("cuda") else "cpu"
 
         mask_image = load_fixed_mask(height, mask_image_path)
@@ -386,10 +386,8 @@ class LipsyncPipeline(DiffusionPipeline):
         num_inferences = min(len(video_frames), len(whisper_chunks)) // num_frames
         video_frames = video_frames[: num_inferences * num_frames]
 
-        # Вызов модифицированной версии affine_transform_video
         faces, boxes, affine_matrices, face_indices, face_detected_mask = self.affine_transform_video(video_frames)
 
-        # Для поддержки аудио-синхронизации с кадрами, где есть лица
         if self.denoising_unet.add_audio_layer:
             face_audio_chunks = []
             for idx in face_indices:
@@ -498,7 +496,6 @@ class LipsyncPipeline(DiffusionPipeline):
             )
             synced_video_frames.append(decoded_latents)
 
-        # Используем restore_video_with_originals для включения оригинальных кадров
         synced_video_frames = self.restore_video_with_originals(
             torch.cat(synced_video_frames), video_frames, boxes, affine_matrices, face_indices
         )
@@ -514,7 +511,6 @@ class LipsyncPipeline(DiffusionPipeline):
             shutil.rmtree(temp_dir)
         os.makedirs(temp_dir, exist_ok=True)
 
-        # Используем метод сохранения кадров по одному, как в вашем рабочем коде
         frames_dir = os.path.join(temp_dir, "output_frames")
         os.makedirs(frames_dir, exist_ok=True)
 
@@ -524,7 +520,6 @@ class LipsyncPipeline(DiffusionPipeline):
 
         sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
 
-        # Используем ваши параметры ffmpeg для лучшего качества
         command = (
             f"ffmpeg -y -loglevel error -nostdin "
             f"-framerate 25 -i {frames_dir}/frame_%05d.png "
@@ -538,3 +533,21 @@ class LipsyncPipeline(DiffusionPipeline):
         )
 
         subprocess.run(command, shell=True)
+
+        try:
+            if os.path.exists(os.path.join(temp_dir, "frames")):
+                shutil.rmtree(os.path.join(temp_dir, "frames"))
+
+            if os.path.exists(frames_dir):
+                shutil.rmtree(frames_dir)
+
+            audio_file = os.path.join(temp_dir, "audio.wav")
+            if os.path.exists(audio_file):
+                os.remove(audio_file)
+
+            if os.path.exists(temp_dir) and not os.listdir(temp_dir):
+                shutil.rmtree(temp_dir)
+
+            print(f"Temporary files cleaned successfully.")
+        except Exception as e:
+            print(f"Warning: Failed to clean some temporary files: {e}")

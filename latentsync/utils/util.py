@@ -41,26 +41,69 @@ def read_json(filepath: str):
         json_dict = json.load(f)
     return json_dict
 
+# # Replaced by version to provide best output video quality
+# def read_video(video_path: str, change_fps=True, use_decord=True):
+#     if change_fps:
+#         temp_dir = "temp"
+#         if os.path.exists(temp_dir):
+#             shutil.rmtree(temp_dir)
+#         os.makedirs(temp_dir, exist_ok=True)
+#         command = (
+#             f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -crf 18 {os.path.join(temp_dir, 'video.mp4')}"
+#         )
+#         subprocess.run(command, shell=True)
+#         target_video_path = os.path.join(temp_dir, "video.mp4")
+#     else:
+#         target_video_path = video_path
+#
+#     if use_decord:
+#         return read_video_decord(target_video_path)
+#     else:
+#         return read_video_cv2(target_video_path)
 
 def read_video(video_path: str, change_fps=True, use_decord=True):
+    temp_dir = "temp"
+    if os.path.exists(temp_dir):
+        shutil.rmtree(temp_dir)
+    os.makedirs(temp_dir, exist_ok=True)
+
+    frames_dir = os.path.join(temp_dir, "frames")
+    os.makedirs(frames_dir, exist_ok=True)
+
     if change_fps:
-        temp_dir = "temp"
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
-        os.makedirs(temp_dir, exist_ok=True)
         command = (
-            f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -crf 18 {os.path.join(temp_dir, 'video.mp4')}"
+            f"ffmpeg -loglevel error -y -nostdin -i {video_path} "
+            f"-r 25 -vsync cfr -pix_fmt rgb24 "
+            f"-sws_flags lanczos+accurate_rnd+full_chroma_int "
+            f"-vf 'scale=in_range=full:out_range=full' "
+            f"-q:v 0 "
+            f"{os.path.join(frames_dir, 'frame_%05d.png')}"
         )
-        subprocess.run(command, shell=True)
-        target_video_path = os.path.join(temp_dir, "video.mp4")
     else:
-        target_video_path = video_path
+        command = (
+            f"ffmpeg -loglevel error -y -nostdin -i {video_path} "
+            f"-vsync cfr -pix_fmt rgb24 "
+            f"-sws_flags lanczos+accurate_rnd+full_chroma_int "
+            f"-vf 'scale=in_range=full:out_range=full' "
+            f"-q:v 0 "
+            f"{os.path.join(frames_dir, 'frame_%05d.png')}"
+        )
 
-    if use_decord:
-        return read_video_decord(target_video_path)
-    else:
-        return read_video_cv2(target_video_path)
+    subprocess.run(command, shell=True)
 
+    frame_files = sorted([os.path.join(frames_dir, f) for f in os.listdir(frames_dir) if f.endswith('.png')])
+    frames = []
+
+    for frame_file in frame_files:
+        from PIL import Image
+        import numpy as np
+
+        img = Image.open(frame_file)
+        frame = np.array(img)
+
+        frames.append(frame)
+
+    return np.array(frames)
 
 def read_video_decord(video_path: str):
     vr = VideoReader(video_path)
