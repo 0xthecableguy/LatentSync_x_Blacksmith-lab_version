@@ -47,7 +47,6 @@ def main():
             print(f"Warning: Audio segment {audio_segment_path} not found. Using full audio instead.")
             audio_segment_path = args.audio_path
 
-        # Используем модульный подход, так как он работает из командной строки
         process_cmd = f"python -m scripts.inference --unet_config_path 'configs/unet/stage2.yaml' --inference_ckpt_path 'checkpoints/latentsync_unet.pt' --inference_steps 30 --guidance_scale 1.5 --video_path '{segment_path}' --audio_path '{audio_segment_path}' --video_out_path '{output_path}'"
         try:
             print(f"Running inference on segment...")
