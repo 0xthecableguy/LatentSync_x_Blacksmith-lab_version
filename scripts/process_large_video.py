@@ -2,6 +2,18 @@ import os
 import subprocess
 import argparse
 import shutil
+import json
+
+
+def get_video_duration(video_path):
+    """Получение длительности видео с помощью ffprobe"""
+    cmd = [
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "json", video_path
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    data = json.loads(result.stdout)
+    return float(data["format"]["duration"])
 
 
 def main():
@@ -18,45 +30,83 @@ def main():
         shutil.rmtree(temp_dir)
     os.makedirs(temp_dir, exist_ok=True)
 
-    # Разделяем видео на сегменты - использую просто число секунд, не формат времени
-    cmd = f"ffmpeg -i {args.video_path} -c copy -map 0 -segment_time {args.segment_length} -f segment -reset_timestamps 1 {temp_dir}/segment_%03d.mp4"
-    subprocess.run(cmd, shell=True)
+    # Получаем длительность исходного видео
+    video_duration = get_video_duration(args.video_path)
+    print(f"Video duration: {video_duration:.2f} seconds")
 
-    # Разделяем аудио на соответствующие сегменты - также использую просто число секунд
-    audio_cmd = f"ffmpeg -i {args.audio_path} -f segment -segment_time {args.segment_length} -c copy {temp_dir}/audio_%03d.mp3"
-    subprocess.run(audio_cmd, shell=True)
+    # Создаем список позиций сегментов
+    segment_positions = []
+    current_position = 0
 
-    # Обрабатываем каждый сегмент
-    segment_files = sorted([f for f in os.listdir(temp_dir) if f.startswith("segment_") and f.endswith(".mp4")])
-    output_files = []
+    while current_position < video_duration:
+        end_position = min(current_position + args.segment_length, video_duration)
+        segment_positions.append((current_position, end_position))
+        current_position = end_position
 
-    for i, segment in enumerate(segment_files):
-        segment_path = os.path.join(temp_dir, segment)
-        audio_segment = f"audio_{i:03d}.mp3"
-        audio_segment_path = os.path.join(temp_dir, audio_segment)
-        output_path = os.path.join(temp_dir, f"output_{segment}")
-        output_files.append(output_path)
+    print(f"Will process video in {len(segment_positions)} segments")
 
-        # Проверяем, существует ли аудиосегмент
-        if not os.path.exists(audio_segment_path):
-            print(f"Warning: Audio segment {audio_segment_path} not found. Using full audio instead.")
-            audio_segment_path = args.audio_path
+    # Файл для списка обработанных сегментов
+    segments_list_file = os.path.join(temp_dir, "processed_segments.txt")
+    with open(segments_list_file, "w") as f:
+        f.write("")  # Создаем пустой файл
 
-        process_cmd = f"python -m scripts.inference --unet_config_path 'configs/unet/second_stage.yaml' --inference_ckpt_path 'checkpoints/latentsync_unet.pt' --inference_steps 30 --guidance_scale 1.5 --video_path '{segment_path}' --audio_path '{audio_segment_path}' --video_out_path '{output_path}'"
+    # Обрабатываем каждый сегмент последовательно
+    for i, (start, end) in enumerate(segment_positions):
+        print(f"\nProcessing segment {i + 1}/{len(segment_positions)}: {start:.2f}s - {end:.2f}s")
+
+        # Очищаем предыдущие временные файлы для экономии места
+        for temp_file in os.listdir(temp_dir):
+            if temp_file != "processed_segments.txt" and not temp_file.startswith("output_"):
+                file_path = os.path.join(temp_dir, temp_file)
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+
+        # Создаем имена файлов для этого сегмента
+        segment_path = os.path.join(temp_dir, f"segment.mp4")
+        audio_segment_path = os.path.join(temp_dir, f"audio.wav")
+        output_path = os.path.join(temp_dir, f"output_{i:03d}.mp4")
+
+        # Вырезаем сегмент видео
+        print(f"Extracting video segment from {start:.2f}s to {end:.2f}s...")
+        video_cmd = f"ffmpeg -y -ss {start:.3f} -to {end:.3f} -i {args.video_path} -c:v libx264 -preset ultrafast -crf 18 {segment_path}"
+        subprocess.run(video_cmd, shell=True)
+
+        # Вырезаем соответствующий сегмент аудио
+        print(f"Extracting audio segment...")
+        audio_cmd = f"ffmpeg -y -ss {start:.3f} -to {end:.3f} -i {args.audio_path} -c:a pcm_s16le {audio_segment_path}"
+        subprocess.run(audio_cmd, shell=True)
+
+        # Запускаем обработку данного сегмента
+        print(f"Processing segment with LatentSync...")
+        process_cmd = (
+            f"python -m scripts.inference "
+            f"--unet_config_path 'configs/unet/second_stage.yaml' "
+            f"--inference_ckpt_path 'checkpoints/latentsync_unet.pt' "
+            f"--inference_steps 30 --guidance_scale 1.5 "
+            f"--video_path '{segment_path}' "
+            f"--audio_path '{audio_segment_path}' "
+            f"--video_out_path '{output_path}'"
+        )
         subprocess.run(process_cmd, shell=True)
 
-    # Создаем список файлов для объединения с правильным форматом
-    with open(f"{temp_dir}/files.txt", "w") as f:
-        for output_file in output_files:
-            # Используем абсолютные пути, чтобы избежать проблем с относительными путями
-            abs_path = os.path.abspath(output_file)
-            f.write(f"file '{abs_path}'\n")
+        # Удаляем временные файлы сегмента после обработки
+        os.remove(segment_path)
+        os.remove(audio_segment_path)
+
+        # Добавляем обработанный сегмент в список
+        with open(segments_list_file, "a") as f:
+            f.write(f"file '{os.path.abspath(output_path)}'\n")
 
     # Объединяем результаты
-    merge_cmd = f"ffmpeg -f concat -safe 0 -i {temp_dir}/files.txt -c copy {args.output_path}"
+    print("\nMerging all processed segments...")
+    merge_cmd = f"ffmpeg -f concat -safe 0 -i {segments_list_file} -c copy {args.output_path}"
     subprocess.run(merge_cmd, shell=True)
 
-    print(f"Processing complete. Final output: {args.output_path}")
+    print(f"\nProcessing complete! Final output: {args.output_path}")
+
+    # Удаляем временные файлы
+    print("Cleaning up temporary files...")
+    shutil.rmtree(temp_dir)
 
 
 if __name__ == "__main__":
