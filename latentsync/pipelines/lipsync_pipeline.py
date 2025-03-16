@@ -396,7 +396,6 @@ class LipsyncPipeline(DiffusionPipeline):
                 else:
                     face_audio_chunks.append(whisper_chunks[-1])
 
-            # Используем только аудио для кадров с лицами
             audio_chunks_for_processing = face_audio_chunks
             num_inferences = min(len(faces), len(audio_chunks_for_processing)) // num_frames
         else:
