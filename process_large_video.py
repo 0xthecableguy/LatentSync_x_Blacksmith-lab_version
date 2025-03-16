@@ -47,21 +47,8 @@ def main():
             print(f"Warning: Audio segment {audio_segment_path} not found. Using full audio instead.")
             audio_segment_path = args.audio_path
 
-        # Находим правильный путь к inference.py
-        script_path = "scripts/inference.py"
-        if not os.path.exists(script_path):
-            # Пробуем найти скрипт
-            if os.path.exists("inference.py"):
-                script_path = "inference.py"
-            else:
-                possible_paths = [f for f in os.listdir() if f.endswith("inference.py")]
-                if possible_paths:
-                    script_path = possible_paths[0]
-                    print(f"Found inference script at: {script_path}")
-                else:
-                    print("Warning: inference.py not found in expected locations")
-
-        process_cmd = f"python {script_path} --unet_config_path 'configs/unet/stage2.yaml' --inference_ckpt_path 'checkpoints/latentsync_unet.pt' --inference_steps 30 --guidance_scale 1.5 --video_path '{segment_path}' --audio_path '{audio_segment_path}' --video_out_path '{output_path}'"
+        # Используем модульный подход, так как он работает из командной строки
+        process_cmd = f"python -m scripts.inference --unet_config_path 'configs/unet/stage2.yaml' --inference_ckpt_path 'checkpoints/latentsync_unet.pt' --inference_steps 30 --guidance_scale 1.5 --video_path '{segment_path}' --audio_path '{audio_segment_path}' --video_out_path '{output_path}'"
         try:
             print(f"Running inference on segment...")
             subprocess.run(process_cmd, shell=True, check=True)
@@ -76,18 +63,18 @@ def main():
             continue
 
     # Проверяем, есть ли обработанные файлы
-    if not output_files:
+    processed_files = [f for f in output_files if os.path.exists(f)]
+    if not processed_files:
         print("Error: No segments were processed")
         shutil.rmtree(temp_dir)
         return
 
     # Создаем список файлов для объединения с правильным форматом
     with open(f"{temp_dir}/files.txt", "w") as f:
-        for output_file in output_files:
-            if os.path.exists(output_file):
-                # Используем абсолютные пути, чтобы избежать проблем с относительными путями
-                abs_path = os.path.abspath(output_file)
-                f.write(f"file '{abs_path}'\n")
+        for output_file in processed_files:
+            # Используем абсолютные пути, чтобы избежать проблем с относительными путями
+            abs_path = os.path.abspath(output_file)
+            f.write(f"file '{abs_path}'\n")
 
     # Объединяем результаты
     print("\nMerging processed segments...")
