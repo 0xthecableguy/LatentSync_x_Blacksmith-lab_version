@@ -24,8 +24,27 @@ def main():
     parser.add_argument("--segment_length", type=int, default=60, help="Length of each segment in seconds")
     args = parser.parse_args()
 
+    # Определяем текущую директорию скрипта и корневую директорию проекта
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)  # Предполагаем, что скрипт находится в подкаталоге проекта
+
+    # Настраиваем пути относительно корня проекта
+    inference_script = os.path.join(project_root, "scripts", "inference.py")
+    config_path = os.path.join(project_root, "configs/unet/second_stage.yaml")
+    checkpoint_path = os.path.join(project_root, "checkpoints/latentsync_unet.pt")
+
+    # Проверка наличия файлов
+    if not os.path.exists(inference_script):
+        print(f"Error: Inference script not found at {inference_script}")
+        print(f"Current directory: {os.getcwd()}")
+        print("Available files in scripts directory:")
+        scripts_dir = os.path.join(project_root, "scripts")
+        if os.path.exists(scripts_dir):
+            print(os.listdir(scripts_dir))
+        return
+
     # Очистка и создание временной директории
-    temp_dir = "temp_segments"
+    temp_dir = os.path.join(project_root, "temp_segments")
     if os.path.exists(temp_dir):
         shutil.rmtree(temp_dir)
     os.makedirs(temp_dir, exist_ok=True)
@@ -78,16 +97,22 @@ def main():
 
         # Запускаем обработку данного сегмента
         print(f"Processing segment with LatentSync...")
+        # Используем полный путь к inference.py и запускаем его как отдельный скрипт
         process_cmd = (
-            f"python -m scripts.inference "
-            f"--unet_config_path 'configs/unet/second_stage.yaml' "
-            f"--inference_ckpt_path 'checkpoints/latentsync_unet.pt' "
+            f"python {inference_script} "
+            f"--unet_config_path '{config_path}' "
+            f"--inference_ckpt_path '{checkpoint_path}' "
             f"--inference_steps 30 --guidance_scale 1.5 "
             f"--video_path '{segment_path}' "
             f"--audio_path '{audio_segment_path}' "
             f"--video_out_path '{output_path}'"
         )
-        subprocess.run(process_cmd, shell=True)
+        subprocess.run(process_cmd, shell=True, check=False)  # Не останавливаемся при ошибке
+
+        # Проверяем, был ли создан выходной файл
+        if not os.path.exists(output_path):
+            print(f"Warning: Output file {output_path} was not created. Skipping this segment.")
+            continue
 
         # Удаляем временные файлы сегмента после обработки
         os.remove(segment_path)
@@ -96,6 +121,13 @@ def main():
         # Добавляем обработанный сегмент в список
         with open(segments_list_file, "a") as f:
             f.write(f"file '{os.path.abspath(output_path)}'\n")
+
+    # Проверяем, есть ли сегменты для объединения
+    with open(segments_list_file, "r") as f:
+        if not f.read().strip():
+            print("Error: No segments were processed successfully.")
+            shutil.rmtree(temp_dir)
+            return
 
     # Объединяем результаты
     print("\nMerging all processed segments...")
