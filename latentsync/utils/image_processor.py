@@ -115,7 +115,7 @@ class ImageProcessor:
 
         return pixel_values, masked_pixel_values, mask
 
-    def affine_transform(self, image: torch.Tensor, allow_multi_faces: bool = True) -> np.ndarray:
+    def affine_transform(self, image: torch.Tensor) -> np.ndarray:
         # image = rearrange(image, "c h w-> h w c").numpy()
         if self.fa is None:
             landmark_coordinates = np.array(self.detect_facial_landmarks(image))
@@ -123,9 +123,7 @@ class ImageProcessor:
         else:
             detected_faces = self.fa.get_landmarks(image)
             if detected_faces is None:
-                raise RuntimeError("Face not detected")
-            if not allow_multi_faces and len(detected_faces) > 1:
-                raise RuntimeError("More than one face detected")
+                return None
             lm68 = detected_faces[0]
 
         points = self.smoother.smooth(lm68)
