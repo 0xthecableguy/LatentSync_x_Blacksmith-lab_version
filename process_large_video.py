@@ -12,41 +12,50 @@ def main():
     parser.add_argument("--segment_length", type=int, default=60, help="Length of each segment in seconds")
     args = parser.parse_args()
 
-    # Очистка и создание временной директории
+    # Getting information about the video duration
+    duration_cmd = f"ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 {args.video_path}"
+    result = subprocess.run(duration_cmd, shell=True, capture_output=True, text=True)
+    total_duration = float(result.stdout.strip())
+    print(f"Total video duration: {total_duration:.2f} seconds")
+
+    # Cleaning and creating a temporary directory
     temp_dir = "temp_segments"
     if os.path.exists(temp_dir):
         shutil.rmtree(temp_dir)
     os.makedirs(temp_dir, exist_ok=True)
 
-    # Разделяем видео на сегменты
-    print(f"Splitting video into {args.segment_length}-second segments...")
-    cmd = f"ffmpeg -i {args.video_path} -c copy -map 0 -segment_time {args.segment_length} -f segment -reset_timestamps 1 {temp_dir}/segment_%03d.mp4"
-    subprocess.run(cmd, shell=True)
+    # Create segments with precise time indication
+    segment_times = []
+    start_time = 0
+    while start_time < total_duration:
+        end_time = min(start_time + args.segment_length, total_duration)
+        segment_times.append((start_time, end_time))
+        start_time = end_time
 
-    # Разделяем аудио на соответствующие сегменты
-    print(f"Splitting audio into {args.segment_length}-second segments...")
-    audio_cmd = f"ffmpeg -i {args.audio_path} -f segment -segment_time {args.segment_length} -c copy {temp_dir}/audio_%03d.mp3"
-    subprocess.run(audio_cmd, shell=True)
+    print(f"Will create {len(segment_times)} segments")
 
-    # Обрабатываем каждый сегмент
-    segment_files = sorted([f for f in os.listdir(temp_dir) if f.startswith("segment_") and f.endswith(".mp4")])
     output_files = []
 
-    print(f"Found {len(segment_files)} video segments to process")
+    # Processing each segment
+    for i, (start, end) in enumerate(segment_times):
+        print(f"\nProcessing segment {i + 1}/{len(segment_times)}: {start:.2f}s - {end:.2f}s")
 
-    for i, segment in enumerate(segment_files):
-        print(f"\nProcessing segment {i + 1}/{len(segment_files)}: {segment}")
-        segment_path = os.path.join(temp_dir, segment)
-        audio_segment = f"audio_{i:03d}.mp3"
-        audio_segment_path = os.path.join(temp_dir, audio_segment)
+        segment_path = os.path.join(temp_dir, f"segment_{i:03d}.mp4")
+        audio_segment_path = os.path.join(temp_dir, f"audio_{i:03d}.mp3")
         output_path = os.path.join(temp_dir, f"output_{i:03d}.mp4")
         output_files.append(output_path)
 
-        # Проверяем, существует ли аудиосегмент
-        if not os.path.exists(audio_segment_path):
-            print(f"Warning: Audio segment {audio_segment_path} not found. Using full audio instead.")
-            audio_segment_path = args.audio_path
+        # Cutting out a segment of the video with precise timestamps
+        print(f"Extracting video segment from {start:.2f}s to {end:.2f}s...")
+        video_cmd = f"ffmpeg -ss {start:.3f} -to {end:.3f} -i {args.video_path} -c:v libx264 -preset ultrafast -avoid_negative_ts 1 {segment_path}"
+        subprocess.run(video_cmd, shell=True)
 
+        # Cutting out the corresponding audio segment
+        print(f"Extracting audio segment...")
+        audio_cmd = f"ffmpeg -ss {start:.3f} -to {end:.3f} -i {args.audio_path} -c:a aac {audio_segment_path}"
+        subprocess.run(audio_cmd, shell=True)
+
+        # Processing the segment using LatentSync
         process_cmd = f"python -m scripts.inference --unet_config_path 'configs/unet/stage2.yaml' --inference_ckpt_path 'checkpoints/latentsync_unet.pt' --inference_steps 30 --guidance_scale 1.5 --video_path '{segment_path}' --audio_path '{audio_segment_path}' --video_out_path '{output_path}'"
         try:
             print(f"Running inference on segment...")
@@ -56,33 +65,36 @@ def main():
             print(f"Error processing segment: {e}")
             continue
 
-        # Проверяем, создался ли выходной файл
+        # Checking if the output file has been created
         if not os.path.exists(output_path):
             print(f"Warning: Output file {output_path} was not created")
             continue
 
-    # Проверяем, есть ли обработанные файлы
+    # Checking if there are any processed files
     processed_files = [f for f in output_files if os.path.exists(f)]
     if not processed_files:
         print("Error: No segments were processed")
         shutil.rmtree(temp_dir)
         return
 
-    # Создаем список файлов для объединения с правильным форматом
+    # Using a reliable method to combine videos
+    # Creating a list of files for concat demuxer
     with open(f"{temp_dir}/files.txt", "w") as f:
         for output_file in processed_files:
-            # Используем абсолютные пути, чтобы избежать проблем с относительными путями
-            abs_path = os.path.abspath(output_file)
-            f.write(f"file '{abs_path}'\n")
+            # Using relative paths relative to files.txt
+            rel_path = os.path.relpath(output_file, temp_dir)
+            # Escaping apostrophes on the way
+            safe_path = rel_path.replace("'", "'\\''")
+            f.write(f"file '{safe_path}'\n")
 
-    # Объединяем результаты
+    # Merging the results
     print("\nMerging processed segments...")
-    merge_cmd = f"ffmpeg -f concat -safe 0 -i {temp_dir}/files.txt -c copy {args.output_path}"
+    merge_cmd = f"cd {temp_dir} && ffmpeg -f concat -safe 0 -i files.txt -c copy {os.path.abspath(args.output_path)}"
     subprocess.run(merge_cmd, shell=True)
 
     print(f"\nProcessing complete. Final output: {args.output_path}")
 
-    # Очистка временных файлов
+    # Cleaning temporary files
     print("Cleaning up temporary files...")
     shutil.rmtree(temp_dir)
 
