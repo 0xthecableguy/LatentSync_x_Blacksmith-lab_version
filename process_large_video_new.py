@@ -6,7 +6,6 @@ import json
 
 
 def get_video_duration(video_path):
-    """Получает точную длительность видео в секундах."""
     cmd = [
         "ffprobe", "-v", "error", "-select_streams", "v:0",
         "-show_entries", "stream=duration", "-of", "json", video_path
