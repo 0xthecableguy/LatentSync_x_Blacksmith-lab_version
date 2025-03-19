@@ -2,39 +2,8 @@ import os
 import subprocess
 import argparse
 import shutil
-import json
-
-
-def get_video_duration(video_path):
-    cmd = [
-        "ffprobe", "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "stream=duration", "-of", "json", video_path
-    ]
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    data = json.loads(result.stdout)
-
-    # Если stream duration недоступна, попробуем duration формата
-    if "streams" in data and data["streams"] and "duration" in data["streams"][0]:
-        return float(data["streams"][0]["duration"])
-    else:
-        cmd = [
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "json", video_path
-        ]
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        data = json.loads(result.stdout)
-        return float(data["format"]["duration"])
-
-
-def get_video_info(video_path):
-    """Получает подробную информацию о видео."""
-    cmd = [
-        "ffprobe", "-v", "error", "-select_streams", "v:0",
-        "-show_entries", "stream=width,height,r_frame_rate,duration",
-        "-of", "json", video_path
-    ]
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    return json.loads(result.stdout)
+import tempfile
+from pathlib import Path
 
 
 def main():
@@ -43,161 +12,119 @@ def main():
     parser.add_argument("--audio_path", type=str, required=True)
     parser.add_argument("--output_path", type=str, required=True)
     parser.add_argument("--segment_length", type=int, default=60, help="Length of each segment in seconds")
-    parser.add_argument("--overlap", type=int, default=5, help="Overlap between segments in seconds")
     args = parser.parse_args()
 
-    # Получаем информацию о длительности видео
-    total_duration = get_video_duration(args.video_path)
-    print(f"Total video duration: {total_duration:.2f} seconds")
+    # Получаем информацию о видео
+    fps_cmd = f"ffprobe -v error -select_streams v -of default=noprint_wrappers=1:nokey=1 -show_entries stream=r_frame_rate {args.video_path}"
+    result = subprocess.run(fps_cmd, shell=True, capture_output=True, text=True)
+    fps_str = result.stdout.strip()
+    if '/' in fps_str:
+        num, den = map(int, fps_str.split('/'))
+        fps = num / den
+    else:
+        fps = float(fps_str)
 
-    # Очистка и создание временной директории
-    temp_dir = "temp_segments"
-    if os.path.exists(temp_dir):
-        shutil.rmtree(temp_dir)
-    os.makedirs(temp_dir, exist_ok=True)
+    duration_cmd = f"ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 {args.video_path}"
+    result = subprocess.run(duration_cmd, shell=True, capture_output=True, text=True)
+    total_duration = float(result.stdout.strip())
+    print(f"Video duration: {total_duration:.2f}s, FPS: {fps}")
 
-    # Создаем сегменты с перекрытием
-    segment_times = []
-    start_time = 0
+    frames_per_segment = int(args.segment_length * fps)
+    total_frames = int(total_duration * fps)
 
-    while start_time < total_duration:
-        end_time = min(start_time + args.segment_length, total_duration)
-        segment_times.append((start_time, end_time))
-        start_time = end_time - args.overlap  # Вычитаем перекрытие
+    # Создаем временную директорию для всех кадров
+    with tempfile.TemporaryDirectory() as all_frames_dir:
+        frames_dir = Path(all_frames_dir) / "frames"
+        frames_dir.mkdir(exist_ok=True)
+        output_frames_dir = Path(all_frames_dir) / "output_frames"
+        output_frames_dir.mkdir(exist_ok=True)
 
-        # Предотвращаем слишком короткие последние сегменты
-        if start_time >= total_duration - args.overlap:
-            break
+        # Извлекаем все кадры из видео
+        print("Extracting frames from video...")
+        extract_cmd = f"ffmpeg -i {args.video_path} -qscale:v 1 {frames_dir}/%05d.png"
+        subprocess.run(extract_cmd, shell=True)
 
-    print(f"Will create {len(segment_times)} segments with {args.overlap}s overlap")
+        # Получаем список всех кадров
+        all_frames = sorted(list(frames_dir.glob("*.png")))
+        if not all_frames:
+            print("No frames were extracted!")
+            return
 
-    # Обрабатываем каждый сегмент
-    processed_files = []
-    trimmed_files = []
+        print(f"Extracted {len(all_frames)} frames")
 
-    for i, (start, end) in enumerate(segment_times):
-        print(f"\nProcessing segment {i + 1}/{len(segment_times)}: {start:.2f}s - {end:.2f}s")
+        # Обрабатываем видео посегментно
+        for start_frame in range(0, len(all_frames), frames_per_segment):
+            end_frame = min(start_frame + frames_per_segment, len(all_frames))
+            segment_frames = all_frames[start_frame:end_frame]
 
-        segment_path = os.path.join(temp_dir, f"segment_{i:03d}.mp4")
-        audio_segment_path = os.path.join(temp_dir, f"audio_{i:03d}.mp3")
-        output_path = os.path.join(temp_dir, f"output_{i:03d}.mp4")
-        trimmed_path = os.path.join(temp_dir, f"trimmed_{i:03d}.mp4")
-        processed_files.append(output_path)
-        trimmed_files.append(trimmed_path)
+            segment_idx = start_frame // frames_per_segment
+            print(f"Processing segment {segment_idx + 1}: frames {start_frame + 1}-{end_frame}")
 
-        # Вырезаем сегмент видео с точными временными метками
-        print(f"Extracting video segment from {start:.2f}s to {end:.2f}s...")
-        video_cmd = f"ffmpeg -ss {start:.3f} -to {end:.3f} -i {args.video_path} -c:v libx264 -preset ultrafast -force_key_frames 0 -avoid_negative_ts 1 {segment_path}"
-        subprocess.run(video_cmd, shell=True)
+            # Создаем временные директории для этого сегмента
+            with tempfile.TemporaryDirectory() as temp_dir:
+                segment_frames_dir = Path(temp_dir) / "segment_frames"
+                segment_frames_dir.mkdir(exist_ok=True)
 
-        # Проверяем длительность вырезанного сегмента
-        segment_duration = get_video_duration(segment_path)
-        print(f"Extracted segment duration: {segment_duration:.2f} seconds")
+                # Создаем символические ссылки на кадры сегмента
+                for i, frame in enumerate(segment_frames):
+                    dest = segment_frames_dir / f"{i + 1:05d}.png"
+                    shutil.copy(frame, dest)
 
-        # Вырезаем соответствующий сегмент аудио
-        print(f"Extracting audio segment...")
-        audio_cmd = f"ffmpeg -ss {start:.3f} -to {end:.3f} -i {args.audio_path} -c:a copy {audio_segment_path}"
-        subprocess.run(audio_cmd, shell=True)
+                # Создаем видео из кадров
+                segment_video = Path(temp_dir) / "segment.mp4"
+                create_video_cmd = f"ffmpeg -framerate {fps} -i {segment_frames_dir}/%05d.png -c:v libx264 -pix_fmt yuv420p {segment_video}"
+                subprocess.run(create_video_cmd, shell=True)
 
-        # Обрабатываем сегмент с помощью LatentSync
-        process_cmd = f"python -m scripts.inference --unet_config_path 'configs/unet/stage2.yaml' --inference_ckpt_path 'checkpoints/latentsync_unet.pt' --inference_steps 50 --guidance_scale 1.5 --video_path '{segment_path}' --audio_path '{audio_segment_path}' --video_out_path '{output_path}'"
-        try:
-            print(f"Running inference on segment...")
-            subprocess.run(process_cmd, shell=True, check=True)
-            print(f"Segment processed successfully")
-        except subprocess.CalledProcessError as e:
-            print(f"Error processing segment: {e}")
-            continue
+                # Определяем временной диапазон для аудио
+                start_time = start_frame / fps
+                end_time = end_frame / fps
 
-        # Проверяем, создался ли выходной файл
-        if not os.path.exists(output_path):
-            print(f"Warning: Output file {output_path} was not created")
-            continue
+                # Извлекаем аудио для этого сегмента
+                segment_audio = Path(temp_dir) / "segment_audio.wav"
+                extract_audio_cmd = f"ffmpeg -ss {start_time:.3f} -to {end_time:.3f} -i {args.audio_path} -c:a pcm_s16le {segment_audio}"
+                subprocess.run(extract_audio_cmd, shell=True)
 
-        # Получаем длительность обработанного файла
-        processed_duration = get_video_duration(output_path)
-        print(f"Processed segment duration: {processed_duration:.2f} seconds")
+                # Обрабатываем сегмент с LatentSync
+                output_video = Path(temp_dir) / "output.mp4"
+                process_cmd = f"python -m scripts.inference --unet_config_path 'configs/unet/stage2.yaml' --inference_ckpt_path 'checkpoints/latentsync_unet.pt' --inference_steps 50 --guidance_scale 1.5 --video_path '{segment_video}' --audio_path '{segment_audio}' --video_out_path '{output_video}'"
+                try:
+                    print(f"Running inference on segment...")
+                    subprocess.run(process_cmd, shell=True, check=True)
+                    print(f"Segment processed successfully")
 
-        # Вычисляем время обрезки для перекрытия с учетом пропорций
-        # Обрабатываем случай, когда длительность обработанного сегмента
-        # отличается от длительности исходного сегмента
-        expected_duration = end - start
-        ratio = processed_duration / expected_duration if expected_duration > 0 else 1.0
+                    # Извлекаем кадры из обработанного видео
+                    extract_output_cmd = f"ffmpeg -i {output_video} -qscale:v 1 {temp_dir}/output_%05d.png"
+                    subprocess.run(extract_output_cmd, shell=True)
 
-        trim_start = 0
-        trim_duration = processed_duration
+                    # Копируем обработанные кадры в общую директорию
+                    output_frames = sorted(list(Path(temp_dir).glob("output_*.png")))
+                    for i, frame in enumerate(output_frames):
+                        global_frame_idx = start_frame + i + 1
+                        shutil.copy(frame, output_frames_dir / f"{global_frame_idx:05d}.png")
 
-        if i > 0:  # Не первый сегмент - обрезаем начало
-            trim_start = (args.overlap / 2) * ratio
+                except Exception as e:
+                    print(f"Error processing segment: {e}")
+                    # В случае ошибки копируем исходные кадры
+                    for i, frame in enumerate(segment_frames):
+                        global_frame_idx = start_frame + i + 1
+                        shutil.copy(frame, output_frames_dir / f"{global_frame_idx:05d}.png")
 
-        if i < len(segment_times) - 1:  # Не последний сегмент - обрезаем конец
-            trim_duration = processed_duration - (args.overlap / 2) * ratio
+        # Получаем финальное видео из всех обработанных кадров
+        print("Creating final video from processed frames...")
+        video_without_audio = "temp_video_no_audio.mp4"
+        create_final_cmd = f"ffmpeg -framerate {fps} -i {output_frames_dir}/%05d.png -c:v libx264 -pix_fmt yuv420p {video_without_audio}"
+        subprocess.run(create_final_cmd, shell=True)
 
-        print(f"Trimming segment: start={trim_start:.2f}s, duration={trim_duration:.2f}s")
+        # Добавляем оригинальное аудио
+        print("Adding original audio to video...")
+        final_cmd = f"ffmpeg -i {video_without_audio} -i {args.audio_path} -map 0:v -map 1:a -c:v copy -c:a aac -shortest {args.output_path}"
+        subprocess.run(final_cmd, shell=True)
 
-        # Обрезаем файл с точными временными метками
-        trim_cmd = f"ffmpeg -i {output_path} -ss {trim_start:.3f} -t {trim_duration - trim_start:.3f} -c:v libx264 -preset fast -c:a aac {trimmed_path}"
-        subprocess.run(trim_cmd, shell=True)
+        # Удаляем временное видео без аудио
+        if os.path.exists(video_without_audio):
+            os.remove(video_without_audio)
 
-        # Проверяем длительность обрезанного файла
-        trimmed_duration = get_video_duration(trimmed_path)
-        print(f"Trimmed segment duration: {trimmed_duration:.2f} seconds")
-
-        if not os.path.exists(trimmed_path) or trimmed_duration <= 0:
-            print(f"Warning: Trimmed file {trimmed_path} was not created correctly, using original")
-            shutil.copy(output_path, trimmed_path)
-
-    # Убеждаемся, что у нас есть обработанные файлы
-    existing_trimmed_files = [f for f in trimmed_files if os.path.exists(f)]
-    if not existing_trimmed_files:
-        print("Error: No segments were processed")
-        shutil.rmtree(temp_dir)
-        return
-
-    # Выводим информацию о всех trimmed файлах
-    print("\nAll trimmed files information:")
-    for file_path in existing_trimmed_files:
-        duration = get_video_duration(file_path)
-        print(f"{os.path.basename(file_path)}: {duration:.2f} seconds")
-
-    # Создаем список файлов для объединения
-    concat_file = os.path.join(temp_dir, "files.txt")
-    with open(concat_file, "w") as f:
-        for file_path in existing_trimmed_files:
-            # Используем относительные пути
-            rel_path = os.path.basename(file_path)
-            f.write(f"file '{rel_path}'\n")
-
-    # Объединяем видео сегменты без аудио
-    print("\nMerging processed video segments without audio...")
-    temp_video_without_audio = os.path.join(temp_dir, "temp_video_no_audio.mp4")
-    merge_cmd = f"cd {temp_dir} && ffmpeg -f concat -safe 0 -i files.txt -c copy {os.path.basename(temp_video_without_audio)}"
-    subprocess.run(merge_cmd, shell=True)
-
-    # Если видео без аудио не создалось, завершаем с ошибкой
-    if not os.path.exists(temp_video_without_audio):
-        print("Error: Failed to create merged video without audio")
-        shutil.rmtree(temp_dir)
-        return
-
-    # Проверяем длительность объединенного видео
-    combined_duration = get_video_duration(temp_video_without_audio)
-    print(f"Combined video duration: {combined_duration:.2f} seconds")
-
-    # Добавляем полную оригинальную аудиодорожку к финальному видео
-    print("\nAdding original audio to the final video...")
-    final_cmd = f"ffmpeg -i {temp_video_without_audio} -i {args.audio_path} -map 0:v -map 1:a -c:v copy -c:a aac -shortest {args.output_path}"
-    subprocess.run(final_cmd, shell=True)
-
-    print(f"\nProcessing complete. Final output: {args.output_path}")
-
-    # Проверяем длительность финального видео
-    final_duration = get_video_duration(args.output_path)
-    print(f"Final video duration: {final_duration:.2f} seconds")
-
-    # Очистка временных файлов
-    print("Cleaning up temporary files...")
-    shutil.rmtree(temp_dir)
+    print(f"Processing complete! Output saved to: {args.output_path}")
 
 
 if __name__ == "__main__":
