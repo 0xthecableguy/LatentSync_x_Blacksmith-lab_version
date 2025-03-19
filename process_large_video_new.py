@@ -96,7 +96,7 @@ def main():
 
         # Вырезаем соответствующий сегмент аудио
         print(f"Extracting audio segment...")
-        audio_cmd = f"ffmpeg -ss {start:.3f} -to {end:.3f} -i {args.audio_path} -c:a aac {audio_segment_path}"
+        audio_cmd = f"ffmpeg -ss {start:.3f} -to {end:.3f} -i {args.audio_path} -c:a copy {audio_segment_path}"
         subprocess.run(audio_cmd, shell=True)
 
         # Обрабатываем сегмент с помощью LatentSync
