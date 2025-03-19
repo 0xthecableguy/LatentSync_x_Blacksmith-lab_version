@@ -70,21 +70,38 @@ def read_video(video_path: str, change_fps=True, use_decord=True):
     frames_dir = os.path.join(temp_dir, "frames")
     os.makedirs(frames_dir, exist_ok=True)
 
+    # if change_fps:
+    #     command = (
+    #         f"ffmpeg -loglevel error -y -nostdin -i {video_path} "
+    #         f"-r 25 -vsync cfr -pix_fmt rgb24 "
+    #         f"-sws_flags lanczos+accurate_rnd+full_chroma_int "
+    #         f"-vf 'scale=in_range=full:out_range=full' "
+    #         f"-q:v 0 "
+    #         f"{os.path.join(frames_dir, 'frame_%05d.png')}"
+    #     )
+    # else:
+    #     command = (
+    #         f"ffmpeg -loglevel error -y -nostdin -i {video_path} "
+    #         f"-vsync cfr -pix_fmt rgb24 "
+    #         f"-sws_flags lanczos+accurate_rnd+full_chroma_int "
+    #         f"-vf 'scale=in_range=full:out_range=full' "
+    #         f"-q:v 0 "
+    #         f"{os.path.join(frames_dir, 'frame_%05d.png')}"
+    #     )
+
     if change_fps:
         command = (
             f"ffmpeg -loglevel error -y -nostdin -i {video_path} "
-            f"-r 25 -vsync cfr -pix_fmt rgb24 "
+            f"-r 25 -vsync cfr "
             f"-sws_flags lanczos+accurate_rnd+full_chroma_int "
-            f"-vf 'scale=in_range=full:out_range=full' "
             f"-q:v 0 "
             f"{os.path.join(frames_dir, 'frame_%05d.png')}"
         )
     else:
         command = (
             f"ffmpeg -loglevel error -y -nostdin -i {video_path} "
-            f"-vsync cfr -pix_fmt rgb24 "
+            f"-vsync cfr "
             f"-sws_flags lanczos+accurate_rnd+full_chroma_int "
-            f"-vf 'scale=in_range=full:out_range=full' "
             f"-q:v 0 "
             f"{os.path.join(frames_dir, 'frame_%05d.png')}"
         )

@@ -80,12 +80,17 @@ def main():
                 # Для первого сегмента берем только первые segment_length секунд
                 trim_cmd = f"ffmpeg -i {output_path} -to {args.segment_length} -c:v copy -c:a copy {trimmed_path}"
                 print(f"Trimming first segment to {args.segment_length} seconds")
+                subprocess.run(trim_cmd, shell=True)
             else:
                 # Остальные сегменты копируем как есть
                 shutil.copy(output_path, trimmed_path)
                 print(f"Keeping segment as is")
 
-            processed_files.append(trimmed_path)
+            # Проверяем, что файл существует перед добавлением
+            if os.path.exists(trimmed_path):
+                processed_files.append(trimmed_path)
+            else:
+                print(f"Warning: Trimmed file {trimmed_path} does not exist")
 
         except subprocess.CalledProcessError as e:
             print(f"Error processing segment: {e}")
@@ -95,20 +100,21 @@ def main():
     # Проверяем, есть ли обработанные файлы
     if not processed_files:
         print("Error: No segments were processed")
-        shutil.rmtree(temp_dir)
+        if not args.keep_temp:
+            shutil.rmtree(temp_dir)
         return
 
     # Создаем список файлов для объединения
     concat_file = os.path.join(temp_dir, "files.txt")
     with open(concat_file, "w") as f:
         for file_path in processed_files:
-            # Используем относительные пути
-            rel_path = os.path.relpath(file_path, temp_dir)
-            f.write(f"file '{rel_path}'\n")
+            # Используем абсолютные пути для надежности
+            abs_path = os.path.abspath(file_path)
+            f.write(f"file '{abs_path}'\n")
 
     # Объединяем результаты
     print("\nMerging processed segments...")
-    merge_cmd = f"cd {temp_dir} && ffmpeg -f concat -safe 0 -i files.txt -c copy {os.path.abspath(args.output_path)}"
+    merge_cmd = f"ffmpeg -f concat -safe 0 -i {concat_file} -c copy {args.output_path}"
     subprocess.run(merge_cmd, shell=True)
 
     print(f"\nProcessing complete. Final output: {args.output_path}")
@@ -118,8 +124,10 @@ def main():
     os.makedirs(results_dir, exist_ok=True)
 
     for i, file_path in enumerate(processed_files):
-        dest_path = os.path.join(results_dir, f"segment_{i:03d}.mp4")
-        shutil.copy(file_path, dest_path)
+        if os.path.exists(file_path):
+            dest_path = os.path.join(results_dir, f"segment_{i:03d}.mp4")
+            shutil.copy(file_path, dest_path)
+            print(f"Saved segment {i} to {dest_path}")
 
     print(f"Individual segments saved in '{results_dir}' directory")
 
