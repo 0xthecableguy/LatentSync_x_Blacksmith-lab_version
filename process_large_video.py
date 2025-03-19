@@ -91,7 +91,7 @@ def main():
 
     # Merging the results
     print("\nMerging processed segments...")
-    merge_cmd = f"cd {temp_dir} && ffmpeg -f concat -safe 0 -i files.txt -c copy {os.path.abspath(args.output_path)}"
+    merge_cmd = f"cd {temp_dir} && ffmpeg -f concat -safe 0 -i files.txt -c:v libx264 -preset slow -crf 18 -force_key_frames 'expr:gte(t,n_forced*60)' {os.path.abspath(args.output_path)}"
     subprocess.run(merge_cmd, shell=True)
 
     print(f"\nProcessing complete. Final output: {args.output_path}")
