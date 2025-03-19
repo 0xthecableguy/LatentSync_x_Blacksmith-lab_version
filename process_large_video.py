@@ -12,6 +12,8 @@ def main():
     parser.add_argument("--segment_length", type=int, default=60, help="Length of each segment in seconds")
     args = parser.parse_args()
 
+    audio_ext = os.path.splitext(args.audio_path)[1]
+
     # Getting information about the video duration
     duration_cmd = f"ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 {args.video_path}"
     result = subprocess.run(duration_cmd, shell=True, capture_output=True, text=True)
@@ -41,7 +43,7 @@ def main():
         print(f"\nProcessing segment {i + 1}/{len(segment_times)}: {start:.2f}s - {end:.2f}s")
 
         segment_path = os.path.join(temp_dir, f"segment_{i:03d}.mp4")
-        audio_segment_path = os.path.join(temp_dir, f"audio_{i:03d}.mp3")
+        audio_segment_path = os.path.join(temp_dir, f"audio_{i:03d}{audio_ext}")
         output_path = os.path.join(temp_dir, f"output_{i:03d}.mp4")
         output_files.append(output_path)
 
@@ -52,7 +54,7 @@ def main():
 
         # Cutting out the corresponding audio segment
         print(f"Extracting audio segment...")
-        audio_cmd = f"ffmpeg -ss {start:.3f} -to {end:.3f} -i {args.audio_path} -c:a aac {audio_segment_path}"
+        audio_cmd = f"ffmpeg -ss {start:.3f} -to {end:.3f} -i {args.audio_path} -c:a copy {audio_segment_path}"
         subprocess.run(audio_cmd, shell=True)
 
         # Processing the segment using LatentSync
