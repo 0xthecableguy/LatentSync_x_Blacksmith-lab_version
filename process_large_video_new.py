@@ -45,19 +45,17 @@ def main():
 
     # Обрабатываем каждый сегмент
     processed_files = []
-    intermediate_files = []
+    trimmed_files = []
 
     for i, (start, end) in enumerate(segment_times):
         print(f"\nProcessing segment {i + 1}/{len(segment_times)}: {start:.2f}s - {end:.2f}s")
 
         segment_path = os.path.join(temp_dir, f"segment_{i:03d}.mp4")
-        intermediate_files.append(segment_path)
-
         audio_segment_path = os.path.join(temp_dir, f"audio_{i:03d}{audio_ext}")
-        intermediate_files.append(audio_segment_path)
-
         output_path = os.path.join(temp_dir, f"output_{i:03d}.mp4")
+        trimmed_path = os.path.join(temp_dir, f"trimmed_{i:03d}.mp4")
         processed_files.append(output_path)
+        trimmed_files.append(trimmed_path)
 
         # Вырезаем сегмент видео с точными временными метками
         print(f"Extracting video segment from {start:.2f}s to {end:.2f}s...")
@@ -84,17 +82,43 @@ def main():
             print(f"Warning: Output file {output_path} was not created")
             continue
 
+        # Обрезаем перекрывающиеся части обработанных файлов
+        overlap_start = 0
+        overlap_end = None
+
+        if i > 0:  # Не первый сегмент - обрезаем начало
+            overlap_start = args.overlap / 2
+
+        if i < len(segment_times) - 1:  # Не последний сегмент - обрезаем конец
+            # Получаем длительность обработанного файла
+            duration_cmd = f"ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 {output_path}"
+            result = subprocess.run(duration_cmd, shell=True, capture_output=True, text=True)
+            segment_duration = float(result.stdout.strip())
+            overlap_end = segment_duration - args.overlap / 2
+
+        # Обрезаем файл
+        trim_cmd = f"ffmpeg -i {output_path} -ss {overlap_start:.3f}"
+        if overlap_end:
+            trim_cmd += f" -to {overlap_end:.3f}"
+        trim_cmd += f" -c copy {trimmed_path}"
+
+        subprocess.run(trim_cmd, shell=True)
+
+        if not os.path.exists(trimmed_path):
+            print(f"Warning: Trimmed file {trimmed_path} was not created, using original")
+            shutil.copy(output_path, trimmed_path)
+
     # Убеждаемся, что у нас есть обработанные файлы
-    existing_processed_files = [f for f in processed_files if os.path.exists(f)]
-    if not existing_processed_files:
+    existing_trimmed_files = [f for f in trimmed_files if os.path.exists(f)]
+    if not existing_trimmed_files:
         print("Error: No segments were processed")
-        shutil.rmtree(temp_dir)
+        # shutil.rmtree(temp_dir)
         return
 
     # Создаем список файлов для объединения
     concat_file = os.path.join(temp_dir, "files.txt")
     with open(concat_file, "w") as f:
-        for file_path in existing_processed_files:
+        for file_path in existing_trimmed_files:
             # Используем относительные пути
             rel_path = os.path.basename(file_path)
             f.write(f"file '{rel_path}'\n")
@@ -102,13 +126,13 @@ def main():
     # Объединяем видео сегменты без аудио
     print("\nMerging processed video segments without audio...")
     temp_video_without_audio = os.path.join(temp_dir, "temp_video_no_audio.mp4")
-    merge_cmd = f"cd {temp_dir} && ffmpeg -f concat -safe 0 -i files.txt -c:v copy -an {os.path.basename(temp_video_without_audio)}"
+    merge_cmd = f"cd {temp_dir} && ffmpeg -f concat -safe 0 -i files.txt -c copy {os.path.basename(temp_video_without_audio)}"
     subprocess.run(merge_cmd, shell=True)
 
     # Если видео без аудио не создалось, завершаем с ошибкой
     if not os.path.exists(temp_video_without_audio):
         print("Error: Failed to create merged video without audio")
-        shutil.rmtree(temp_dir)
+        # shutil.rmtree(temp_dir)
         return
 
     # Добавляем полную оригинальную аудиодорожку к финальному видео
@@ -120,7 +144,7 @@ def main():
 
     # Очистка временных файлов
     print("Cleaning up temporary files...")
-    shutil.rmtree(temp_dir)
+    # shutil.rmtree(temp_dir)
 
 
 if __name__ == "__main__":
