@@ -2,6 +2,40 @@ import os
 import subprocess
 import argparse
 import shutil
+import json
+
+
+def get_video_duration(video_path):
+    """Получает точную длительность видео в секундах."""
+    cmd = [
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=duration", "-of", "json", video_path
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    data = json.loads(result.stdout)
+
+    # Если stream duration недоступна, попробуем duration формата
+    if "streams" in data and data["streams"] and "duration" in data["streams"][0]:
+        return float(data["streams"][0]["duration"])
+    else:
+        cmd = [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "json", video_path
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        data = json.loads(result.stdout)
+        return float(data["format"]["duration"])
+
+
+def get_video_info(video_path):
+    """Получает подробную информацию о видео."""
+    cmd = [
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height,r_frame_rate,duration",
+        "-of", "json", video_path
+    ]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    return json.loads(result.stdout)
 
 
 def main():
@@ -13,13 +47,8 @@ def main():
     parser.add_argument("--overlap", type=int, default=5, help="Overlap between segments in seconds")
     args = parser.parse_args()
 
-    # Определяем расширение аудио файла для сохранения того же формата
-    audio_ext = os.path.splitext(args.audio_path)[1]  # Получаем расширение (.mp3, .wav, и т.д.)
-
     # Получаем информацию о длительности видео
-    duration_cmd = f"ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 {args.video_path}"
-    result = subprocess.run(duration_cmd, shell=True, capture_output=True, text=True)
-    total_duration = float(result.stdout.strip())
+    total_duration = get_video_duration(args.video_path)
     print(f"Total video duration: {total_duration:.2f} seconds")
 
     # Очистка и создание временной директории
@@ -51,7 +80,7 @@ def main():
         print(f"\nProcessing segment {i + 1}/{len(segment_times)}: {start:.2f}s - {end:.2f}s")
 
         segment_path = os.path.join(temp_dir, f"segment_{i:03d}.mp4")
-        audio_segment_path = os.path.join(temp_dir, f"audio_{i:03d}{audio_ext}")
+        audio_segment_path = os.path.join(temp_dir, f"audio_{i:03d}.mp3")
         output_path = os.path.join(temp_dir, f"output_{i:03d}.mp4")
         trimmed_path = os.path.join(temp_dir, f"trimmed_{i:03d}.mp4")
         processed_files.append(output_path)
@@ -62,9 +91,13 @@ def main():
         video_cmd = f"ffmpeg -ss {start:.3f} -to {end:.3f} -i {args.video_path} -c:v libx264 -preset ultrafast -force_key_frames 0 -avoid_negative_ts 1 {segment_path}"
         subprocess.run(video_cmd, shell=True)
 
-        # Вырезаем соответствующий сегмент аудио, сохраняя оригинальный кодек
+        # Проверяем длительность вырезанного сегмента
+        segment_duration = get_video_duration(segment_path)
+        print(f"Extracted segment duration: {segment_duration:.2f} seconds")
+
+        # Вырезаем соответствующий сегмент аудио
         print(f"Extracting audio segment...")
-        audio_cmd = f"ffmpeg -ss {start:.3f} -to {end:.3f} -i {args.audio_path} -c:a copy {audio_segment_path}"
+        audio_cmd = f"ffmpeg -ss {start:.3f} -to {end:.3f} -i {args.audio_path} -c:a aac {audio_segment_path}"
         subprocess.run(audio_cmd, shell=True)
 
         # Обрабатываем сегмент с помощью LatentSync
@@ -82,38 +115,51 @@ def main():
             print(f"Warning: Output file {output_path} was not created")
             continue
 
-        # Обрезаем перекрывающиеся части обработанных файлов
-        overlap_start = 0
-        overlap_end = None
+        # Получаем длительность обработанного файла
+        processed_duration = get_video_duration(output_path)
+        print(f"Processed segment duration: {processed_duration:.2f} seconds")
+
+        # Вычисляем время обрезки для перекрытия с учетом пропорций
+        # Обрабатываем случай, когда длительность обработанного сегмента
+        # отличается от длительности исходного сегмента
+        expected_duration = end - start
+        ratio = processed_duration / expected_duration if expected_duration > 0 else 1.0
+
+        trim_start = 0
+        trim_duration = processed_duration
 
         if i > 0:  # Не первый сегмент - обрезаем начало
-            overlap_start = args.overlap / 2
+            trim_start = (args.overlap / 2) * ratio
 
         if i < len(segment_times) - 1:  # Не последний сегмент - обрезаем конец
-            # Получаем длительность обработанного файла
-            duration_cmd = f"ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 {output_path}"
-            result = subprocess.run(duration_cmd, shell=True, capture_output=True, text=True)
-            segment_duration = float(result.stdout.strip())
-            overlap_end = segment_duration - args.overlap / 2
+            trim_duration = processed_duration - (args.overlap / 2) * ratio
 
-        # Обрезаем файл
-        trim_cmd = f"ffmpeg -i {output_path} -ss {overlap_start:.3f}"
-        if overlap_end:
-            trim_cmd += f" -to {overlap_end:.3f}"
-        trim_cmd += f" -c copy {trimmed_path}"
+        print(f"Trimming segment: start={trim_start:.2f}s, duration={trim_duration:.2f}s")
 
+        # Обрезаем файл с точными временными метками
+        trim_cmd = f"ffmpeg -i {output_path} -ss {trim_start:.3f} -t {trim_duration - trim_start:.3f} -c:v libx264 -preset fast -c:a aac {trimmed_path}"
         subprocess.run(trim_cmd, shell=True)
 
-        if not os.path.exists(trimmed_path):
-            print(f"Warning: Trimmed file {trimmed_path} was not created, using original")
+        # Проверяем длительность обрезанного файла
+        trimmed_duration = get_video_duration(trimmed_path)
+        print(f"Trimmed segment duration: {trimmed_duration:.2f} seconds")
+
+        if not os.path.exists(trimmed_path) or trimmed_duration <= 0:
+            print(f"Warning: Trimmed file {trimmed_path} was not created correctly, using original")
             shutil.copy(output_path, trimmed_path)
 
     # Убеждаемся, что у нас есть обработанные файлы
     existing_trimmed_files = [f for f in trimmed_files if os.path.exists(f)]
     if not existing_trimmed_files:
         print("Error: No segments were processed")
-        # shutil.rmtree(temp_dir)
+        shutil.rmtree(temp_dir)
         return
+
+    # Выводим информацию о всех trimmed файлах
+    print("\nAll trimmed files information:")
+    for file_path in existing_trimmed_files:
+        duration = get_video_duration(file_path)
+        print(f"{os.path.basename(file_path)}: {duration:.2f} seconds")
 
     # Создаем список файлов для объединения
     concat_file = os.path.join(temp_dir, "files.txt")
@@ -132,8 +178,12 @@ def main():
     # Если видео без аудио не создалось, завершаем с ошибкой
     if not os.path.exists(temp_video_without_audio):
         print("Error: Failed to create merged video without audio")
-        # shutil.rmtree(temp_dir)
+        shutil.rmtree(temp_dir)
         return
+
+    # Проверяем длительность объединенного видео
+    combined_duration = get_video_duration(temp_video_without_audio)
+    print(f"Combined video duration: {combined_duration:.2f} seconds")
 
     # Добавляем полную оригинальную аудиодорожку к финальному видео
     print("\nAdding original audio to the final video...")
@@ -142,9 +192,13 @@ def main():
 
     print(f"\nProcessing complete. Final output: {args.output_path}")
 
+    # Проверяем длительность финального видео
+    final_duration = get_video_duration(args.output_path)
+    print(f"Final video duration: {final_duration:.2f} seconds")
+
     # Очистка временных файлов
     print("Cleaning up temporary files...")
-    # shutil.rmtree(temp_dir)
+    shutil.rmtree(temp_dir)
 
 
 if __name__ == "__main__":
