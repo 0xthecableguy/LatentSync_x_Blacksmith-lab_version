@@ -69,7 +69,7 @@ def main():
         subprocess.run(audio_cmd, shell=True)
 
         # Обрабатываем сегмент с LatentSync
-        process_cmd = f"python -m scripts.inference --unet_config_path 'configs/unet/stage2.yaml' --inference_ckpt_path 'checkpoints/latentsync_unet.pt' --inference_steps 30 --guidance_scale 1.5 --video_path '{segment_path}' --audio_path '{audio_segment_path}' --video_out_path '{output_path}'"
+        process_cmd = f"python -m scripts.inference --unet_config_path 'configs/unet/stage2.yaml' --inference_ckpt_path 'checkpoints/latentsync_unet.pt' --inference_steps 50 --guidance_scale 2.0 --video_path '{segment_path}' --audio_path '{audio_segment_path}' --video_out_path '{output_path}'"
         try:
             print(f"Running inference on segment...")
             subprocess.run(process_cmd, shell=True, check=True)
