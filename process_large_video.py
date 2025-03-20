@@ -82,9 +82,11 @@ def main():
                 print(f"Trimming first segment to {args.segment_length} seconds")
                 subprocess.run(trim_cmd, shell=True)
             else:
-                # Остальные сегменты копируем как есть
-                shutil.copy(output_path, trimmed_path)
-                print(f"Keeping segment as is")
+                # Для всех остальных сегментов обрезаем первые overlap секунд
+                # чтобы избежать дублирования при склейке
+                trim_cmd = f"ffmpeg -i {output_path} -ss {args.overlap} -c:v copy -c:a copy {trimmed_path}"
+                print(f"Trimming segment {i} - removing first {args.overlap} seconds of overlap")
+                subprocess.run(trim_cmd, shell=True)
 
             # Проверяем, что файл существует перед добавлением
             if os.path.exists(trimmed_path):
