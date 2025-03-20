@@ -76,17 +76,19 @@ def main():
             print(f"Segment processed successfully")
 
             # Обрезаем сегменты для склейки
-            if i == 0:
-                # Для первого сегмента берем только первые segment_length секунд
-                trim_cmd = f"ffmpeg -i {output_path} -to {args.segment_length} -c:v copy -c:a copy {trimmed_path}"
-                print(f"Trimming first segment to {args.segment_length} seconds")
+            if i < len(segment_times) - 1:  # Если это не последний сегмент
+                # Обрезаем последние overlap секунд, так как они перекрываются с началом следующего сегмента
+                segment_duration_cmd = f"ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 {output_path}"
+                result = subprocess.run(segment_duration_cmd, shell=True, capture_output=True, text=True)
+                segment_duration = float(result.stdout.strip())
+
+                trim_cmd = f"ffmpeg -i {output_path} -to {segment_duration - args.overlap} -c:v copy -c:a copy {trimmed_path}"
+                print(f"Trimming segment {i} - removing last {args.overlap} seconds (overlap)")
                 subprocess.run(trim_cmd, shell=True)
             else:
-                # Для всех остальных сегментов обрезаем первые overlap секунд
-                # чтобы избежать дублирования при склейке
-                trim_cmd = f"ffmpeg -i {output_path} -ss {args.overlap} -c:v copy -c:a copy {trimmed_path}"
-                print(f"Trimming segment {i} - removing first {args.overlap} seconds of overlap")
-                subprocess.run(trim_cmd, shell=True)
+                # Последний сегмент оставляем как есть
+                shutil.copy(output_path, trimmed_path)
+                print(f"Keeping last segment as is")
 
             # Проверяем, что файл существует перед добавлением
             if os.path.exists(trimmed_path):
