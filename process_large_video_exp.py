@@ -57,6 +57,7 @@ def get_video_info(file_path):
         'duration': duration,
         'size': float(info['format']['size']),
         'bit_rate': float(info['format'].get('bit_rate', 0)),
+        'start_time': float(info['format'].get('start_time', 0)),
     }
 
     if video_stream:
@@ -70,6 +71,11 @@ def get_video_info(file_path):
         video_info['width'] = int(video_stream.get('width', 0))
         video_info['height'] = int(video_stream.get('height', 0))
         video_info['codec'] = video_stream.get('codec_name', '')
+
+        # Добавляем точную информацию о временных метках видеопотока
+        video_info['video_start_time'] = float(video_stream.get('start_time', 0))
+        if 'time_base' in video_stream:
+            video_info['video_time_base'] = video_stream['time_base']
 
         # Определяем GOP (Group of Pictures) - расстояние между ключевыми кадрами
         if 'codec_name' in video_stream:
@@ -95,6 +101,12 @@ def get_video_info(file_path):
         video_info['audio_codec'] = audio_stream.get('codec_name', '')
         video_info['audio_channels'] = int(audio_stream.get('channels', 0))
         video_info['audio_sample_rate'] = int(audio_stream.get('sample_rate', 0))
+
+        # Добавляем точную информацию о временных метках аудиопотока
+        video_info['audio_start_time'] = float(audio_stream.get('start_time', 0))
+        if 'time_base' in audio_stream:
+            video_info['audio_time_base'] = audio_stream['time_base']
+        video_info['audio_duration'] = float(audio_stream.get('duration', duration))
 
     return video_info
 
@@ -141,6 +153,8 @@ def main():
     parser.add_argument("--keep_temp", action="store_true", help="Keep temporary files after processing")
     parser.add_argument("--quality", type=str, default="high", choices=["ultrafast", "fast", "medium", "slow", "high"],
                         help="Encoding quality/speed tradeoff")
+    parser.add_argument("--audio_offset", type=float, default=None,
+                        help="Manual correction for audio offset in seconds (can be negative)")
     args = parser.parse_args()
 
     # Настройки качества кодирования
@@ -172,15 +186,45 @@ def main():
     for dir_path in dirs.values():
         os.makedirs(dir_path, exist_ok=True)
 
-    # Получаем информацию о видео
+    # Получаем информацию о видео и аудио
     video_info = get_video_info(args.video_path)
+    audio_info = get_video_info(args.audio_path)
+
     print(f"Video information:")
     print(f"- Duration: {video_info['duration']:.2f} seconds")
+    print(f"- Start time: {video_info.get('start_time', 0):.6f} seconds")
+    print(f"- Video stream start: {video_info.get('video_start_time', 0):.6f} seconds")
     print(f"- Resolution: {video_info.get('width', 'N/A')}x{video_info.get('height', 'N/A')}")
     print(f"- FPS: {video_info.get('fps', 'N/A')}")
     print(f"- Video codec: {video_info.get('codec', 'N/A')}")
-    print(f"- Audio codec: {video_info.get('audio_codec', 'N/A')}")
     print(f"- Estimated keyframe interval: {video_info.get('keyframe_interval', 'N/A')} frames")
+
+    print(f"\nAudio information:")
+    print(f"- Duration: {audio_info['duration']:.2f} seconds")
+    print(f"- Start time: {audio_info.get('start_time', 0):.6f} seconds")
+    print(f"- Audio stream start: {audio_info.get('audio_start_time', 0):.6f} seconds")
+    print(f"- Audio codec: {audio_info.get('audio_codec', 'N/A')}")
+    print(f"- Sample rate: {audio_info.get('audio_sample_rate', 'N/A')} Hz")
+    print(f"- Channels: {audio_info.get('audio_channels', 'N/A')}")
+
+    # Определяем смещение аудио относительно видео
+    audio_offset = args.audio_offset
+    if audio_offset is None:
+        # Автоматическое определение смещения
+        video_start = video_info.get('video_start_time', 0)
+        audio_start = audio_info.get('audio_start_time', 0)
+        audio_offset = audio_start - video_start
+
+        # Если разница в длительности, учитываем и это для более точной синхронизации
+        duration_diff = audio_info['duration'] - video_info['duration']
+        if abs(duration_diff) > 0.5:  # Если разница больше 0.5 секунды
+            print(
+                f"\nWARNING: Significant duration difference detected between audio and video: {duration_diff:.2f} seconds")
+            print(f"This may cause synchronization issues in longer videos")
+
+    print(f"\nAudio offset relative to video: {audio_offset:.6f} seconds")
+    if abs(audio_offset) > 0.01:  # Если смещение больше 10 мс
+        print(f"Will apply offset correction for better synchronization")
 
     # Создаем оптимальный план сегментации
     segments = create_optimal_segment_plan(
@@ -206,6 +250,25 @@ def main():
         audio_segment_path = os.path.join(dirs["audio_segments"], f"audio_{i:03d}.wav")
         processed_path = os.path.join(dirs["processed"], f"processed_{i:03d}.mp4")
 
+        # Применяем коррекцию смещения для аудио
+        audio_start = start
+        audio_end = end
+
+        # Если есть смещение аудио, корректируем точки обрезки
+        if audio_offset != 0:
+            audio_start = max(0, start + audio_offset)
+            audio_end = min(audio_info['duration'], end + audio_offset)
+
+            # Вычисляем, насколько изменилась длительность аудио-сегмента после коррекции
+            original_duration = end - start
+            corrected_duration = audio_end - audio_start
+
+            # Если коррекция сильно изменила длительность, выводим предупреждение
+            if abs(corrected_duration - original_duration) > 0.1:  # Разница больше 100 мс
+                print(f"WARNING: Audio segment {i + 1} duration changed after offset correction:")
+                print(f"  Original: {original_duration:.3f}s, Corrected: {corrected_duration:.3f}s")
+                print(f"  Difference: {corrected_duration - original_duration:.3f}s")
+
         # Извлекаем видеосегмент с более высоким качеством
         # Используем двухпроходное извлечение для более точного начала сегмента
         print(f"\nExtracting video segment {i + 1}...")
@@ -220,10 +283,11 @@ def main():
         )
         run_command(video_cmd, desc=f"Extracting video segment {i + 1}")
 
-        # Извлекаем аудиосегмент
-        print(f"Extracting audio segment {i + 1}...")
+        # Извлекаем аудиосегмент с учетом коррекции
+        print(f"Extracting audio segment {i + 1} (with offset correction)...")
+        audio_duration = audio_end - audio_start
         audio_cmd = (
-            f'ffmpeg -ss {start:.3f} -i "{args.audio_path}" -to {end - start:.3f} '
+            f'ffmpeg -ss {audio_start:.3f} -i "{args.audio_path}" -t {audio_duration:.3f} '
             f'-c:a pcm_s16le -ar 48000 -ac 2 -y "{audio_segment_path}"'
         )
         run_command(audio_cmd, desc=f"Extracting audio segment {i + 1}")
@@ -327,10 +391,25 @@ def main():
 
     # Объединяем результаты с высоким качеством
     print("\nMerging processed segments into final video...")
+
+    # Добавляем проверку на точность временных меток
+    print("Verifying segment durations and metadata for proper synchronization...")
+    for i, segment_path in enumerate(final_segments):
+        segment_info = get_video_info(segment_path)
+        print(f"Segment {i + 1}: Duration = {segment_info['duration']:.3f}s, " +
+              f"Start = {segment_info.get('start_time', 0):.3f}s")
+
+        # Проверка на корректность временных меток
+        if segment_info.get('start_time', 0) > 0.1:  # Значительный сдвиг начала
+            print(f"  WARNING: Segment {i + 1} has non-zero start time: {segment_info.get('start_time', 0):.3f}s")
+
+    # Создаем финальное видео с оптимальными настройками для склейки
     merge_cmd = (
         f'ffmpeg -f concat -safe 0 -i "{concat_file}" '
         f'-c:v libx264 -preset {encoding_settings["preset"]} -crf {encoding_settings["crf"]} '
         f'-pix_fmt yuv420p -profile:v high -level 4.2 '
+        # Добавляем параметры для лучшей синхронизации аудио и видео
+        f'-vsync 1 -async 1 '  # Помогает исправить небольшие проблемы синхронизации
         f'-movflags +faststart -y "{args.output_path}"'
     )
     run_command(merge_cmd, desc="Creating final video")
