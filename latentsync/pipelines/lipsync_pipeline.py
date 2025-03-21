@@ -1,5 +1,6 @@
 # Adapted from https://github.com/guoyww/AnimateDiff/blob/main/animatediff/pipelines/pipeline_animation.py
-
+import gc
+import glob
 import inspect
 import os
 import shutil
@@ -418,6 +419,18 @@ class LipsyncPipeline(DiffusionPipeline):
             generator,
         )
 
+        temp_dir = "temp"
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+        os.makedirs(temp_dir, exist_ok=True)
+
+        processed_frames_dir = os.path.join(temp_dir, "processed_frames")
+        os.makedirs(processed_frames_dir, exist_ok=True)
+
+        frames_dir = os.path.join(temp_dir, "output_frames")
+        os.makedirs(frames_dir, exist_ok=True)
+
+
         for i in tqdm.tqdm(range(num_inferences), desc="Doing inference..."):
             if self.denoising_unet.add_audio_layer:
                 audio_embeds = torch.stack(audio_chunks_for_processing[i * num_frames: (i + 1) * num_frames])
@@ -493,31 +506,72 @@ class LipsyncPipeline(DiffusionPipeline):
             decoded_latents = self.paste_surrounding_pixels_back(
                 decoded_latents, ref_pixel_values, 1 - masks, device, weight_dtype
             )
-            synced_video_frames.append(decoded_latents)
 
-        synced_video_frames = self.restore_video_with_originals(
-            torch.cat(synced_video_frames), video_frames, boxes, affine_matrices, face_indices
-        )
+            for j, frame in enumerate(decoded_latents):
+                frame_idx = i * num_frames + j
+                # Преобразуем тензор в numpy, если нужно
+                if isinstance(frame, torch.Tensor):
+                    frame = frame.cpu().numpy()
+                    frame = np.transpose(frame, (1, 2, 0)) if frame.shape[0] <= 3 else frame
 
-        audio_samples_remain_length = int(synced_video_frames.shape[0] / video_fps * audio_sample_rate)
+                # Сохраняем промежуточный кадр
+                np.save(f"{processed_frames_dir}/frame_{frame_idx:05d}.npy", frame)
+
+            # Освобождаем память
+            del decoded_latents, ref_latents, mask_latents, masked_image_latents
+            gc.collect()
+
+        processed_files = sorted(glob.glob(f"{processed_frames_dir}/frame_*.npy"))
+        total_processed = len(processed_files)
+
+        # Обрабатываем партиями для эффективности, но не храним все сразу
+        batch_size = 20  # Меньше батч - меньше RAM
+        for start_idx in range(0, total_processed, batch_size):
+            end_idx = min(start_idx + batch_size, total_processed)
+            batch_indices = range(start_idx, end_idx)
+
+            # Загружаем часть промежуточных кадров
+            batch_frames = []
+            for idx in batch_indices:
+                frame = np.load(processed_files[idx])
+                batch_frames.append(frame)
+
+            # Подготавливаем индексы и параметры для текущей партии
+            batch_face_indices = face_indices[start_idx:end_idx]
+            batch_boxes = [boxes[i] for i in range(len(boxes)) if i in batch_face_indices]
+            batch_affine_matrices = [affine_matrices[i] for i in range(len(affine_matrices)) if i in batch_face_indices]
+
+            # Обрабатываем только текущую партию
+            restored_batch = self.restore_video_with_originals(
+                torch.tensor(np.array(batch_frames)),
+                video_frames,
+                batch_boxes,
+                batch_affine_matrices,
+                batch_face_indices
+            )
+
+            # Сразу сохраняем результаты на диск
+            for i, frame in enumerate(restored_batch):
+                frame_idx = batch_face_indices[i]
+                frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(f"{frames_dir}/frame_{frame_idx:05d}.png", frame_bgr)
+
+            # Освобождаем память
+            del batch_frames, restored_batch
+            gc.collect()
+
+        output_frame_files = sorted(glob.glob(f"{frames_dir}/frame_*.png"))
+        total_frames = len(output_frame_files)
+
+        # Обрезаем аудио
+        audio_samples_remain_length = int(total_frames / video_fps * audio_sample_rate)
         audio_samples = audio_samples[:audio_samples_remain_length].cpu().numpy()
+
+        # Сохраняем аудио
+        sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
 
         if is_train:
             self.denoising_unet.train()
-
-        temp_dir = "temp"
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
-        os.makedirs(temp_dir, exist_ok=True)
-
-        frames_dir = os.path.join(temp_dir, "output_frames")
-        os.makedirs(frames_dir, exist_ok=True)
-
-        for i, frame in enumerate(synced_video_frames):
-            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            cv2.imwrite(f"{frames_dir}/frame_{i:05d}.png", frame_bgr)
-
-        sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
 
         command = (
             f"ffmpeg -y -loglevel error -nostdin "
@@ -527,7 +581,6 @@ class LipsyncPipeline(DiffusionPipeline):
             f"-x264opts keyint=25:ref=4:qcomp=0.6 "
             f"-c:a aac -b:a 192k -ac 2 "
             f"-pix_fmt yuv420p "
-            # f"-color_primaries 1 -color_trc 1 -colorspace 1 "
             f"{video_out_path}"
         )
 
