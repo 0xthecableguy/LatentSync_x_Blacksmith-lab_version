@@ -527,7 +527,7 @@ class LipsyncPipeline(DiffusionPipeline):
             f"-x264opts keyint=25:ref=4:qcomp=0.6 "
             f"-c:a aac -b:a 192k -ac 2 "
             f"-pix_fmt yuv420p "
-            f"-color_primaries 1 -color_trc 1 -colorspace 1 "
+            # f"-color_primaries 1 -color_trc 1 -colorspace 1 "
             f"{video_out_path}"
         )
 
