@@ -200,7 +200,7 @@ def write_video(batch_output_path, frames, fps=25):
 
     # Используем ffmpeg для создания видео из PNG без потерь
     frames_pattern = os.path.join(temp_frames_dir, "frame_%04d.png")
-    command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset medium -pix_fmt yuv420p {batch_output_path}"
+    command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
     subprocess.run(command, shell=True)
 
     # Удаляем временные файлы

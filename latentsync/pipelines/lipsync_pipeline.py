@@ -718,7 +718,7 @@ class LipsyncPipeline(DiffusionPipeline):
 
         # 11. Combining video and audio
         print("Combining video and audio...")
-        command = f"ffmpeg -y -loglevel error -nostdin -i {combined_video_path} -i {audio_output_path} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -c:a flac {video_out_path}"
+        command = f"ffmpeg -y -loglevel error -i {combined_video_path} -i {audio_output_path} -c:v copy -c:a aac -b:a 320k -map 0:v:0 -map 1:a:0 {video_out_path}"
         subprocess.run(command, shell=True)
 
         # 12. Cleaning temporary files
