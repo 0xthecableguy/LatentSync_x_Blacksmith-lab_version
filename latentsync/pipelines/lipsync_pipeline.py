@@ -443,6 +443,7 @@ class LipsyncPipeline(DiffusionPipeline):
         print("Extracting audio features...")
         whisper_feature = self.audio_encoder.audio2feat(audio_path)
         whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
+        print(f"Video in {video_fps} FPS, audio chunks created for {video_fps} FPS")
         audio_samples = read_audio(audio_path)
 
         #6. Getting information about the video
