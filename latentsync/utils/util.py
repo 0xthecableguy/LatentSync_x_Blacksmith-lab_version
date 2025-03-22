@@ -167,7 +167,8 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
 
 def write_video(batch_output_path, frames, fps=25):
     height, width = frames[0].shape[:2]
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    # Используем несжатые кодеки
+    fourcc = cv2.VideoWriter_fourcc(*'RGBA')  # или 'HFYU' (HuffYUV) если доступен
     out = cv2.VideoWriter(batch_output_path, fourcc, fps, (width, height), isColor=True)
     for frame in frames:
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)

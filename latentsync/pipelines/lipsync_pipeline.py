@@ -497,7 +497,7 @@ class LipsyncPipeline(DiffusionPipeline):
                 os.makedirs(temp_dir, exist_ok=True)
 
                 temp_video_path = os.path.join(temp_dir, "video_25fps.mp4")
-                command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 12 -preset slow -pix_fmt yuv420p {temp_video_path}"
+                command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p {temp_video_path}"
                 print(f"Converting video to 25 FPS: {command}")
                 subprocess.run(command, shell=True)
 
@@ -714,11 +714,11 @@ class LipsyncPipeline(DiffusionPipeline):
         audio_samples_remain_length = int(video_frame_count / video_fps * audio_sample_rate)
         audio_samples = audio_samples[:audio_samples_remain_length].cpu().numpy()
         audio_output_path = os.path.join(temp_dir, "audio.wav")
-        sf.write(audio_output_path, audio_samples, audio_sample_rate)
+        sf.write(audio_output_path, audio_samples, audio_sample_rate, format='WAV', subtype='PCM_24')
 
         # 11. Combining video and audio
         print("Combining video and audio...")
-        command = f"ffmpeg -y -loglevel error -nostdin -i {combined_video_path} -i {audio_output_path} -c:v libx264 -crf 12 -preset slow -pix_fmt yuv420p -c:a aac -b:a 256k {video_out_path}"
+        command = f"ffmpeg -y -loglevel error -nostdin -i {combined_video_path} -i {audio_output_path} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -c:a flac {video_out_path}"
         subprocess.run(command, shell=True)
 
         # 12. Cleaning temporary files
