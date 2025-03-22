@@ -343,42 +343,46 @@ class LipsyncPipeline(DiffusionPipeline):
         if isinstance(processed_frame, torch.Tensor):
             processed_frame = processed_frame.permute(1, 2, 0).cpu().numpy()
 
-        # Убедимся, что данные имеют корректный тип и размерность
-        if processed_frame.ndim != 3 or processed_frame.shape[2] != 3:
-            print(f"Warning: Invalid processed frame shape: {processed_frame.shape}")
-            return original_frame
-
-        # Приведем к правильному типу данных для OpenCV
+        # Убедимся, что данные имеют корректный тип
         if processed_frame.dtype != np.uint8:
             if processed_frame.max() <= 1.0:
                 processed_frame = (processed_frame * 255).astype(np.uint8)
             else:
                 processed_frame = processed_frame.astype(np.uint8)
 
-        # Проверим корректность размеров бокса
-        x1, y1, x2, y2 = box
-        width, height = x2 - x1, y2 - y1
-
-        if width <= 0 or height <= 0:
-            print(f"Warning: Invalid box dimensions: {box}")
-            return original_frame
+        # Создаем копию исходного кадра
+        result = original_frame.copy()
 
         try:
-            # Попытка изменить размер кадра
-            face_resized = cv2.resize(processed_frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
+            # Вместо простой вставки, используем обратное аффинное преобразование
+            # для возврата лица на исходное место
+            h, w = original_frame.shape[:2]
 
-            # Создаем копию исходного кадра для результата
-            result = original_frame.copy()
+            # Создаем маску того же размера, что и лицо
+            face_h, face_w = processed_frame.shape[:2]
+            face_mask = np.ones((face_h, face_w), dtype=np.uint8) * 255
 
-            # Вставляем обработанное лицо
-            result[y1:y2, x1:x2] = face_resized
+            # Применяем обратное аффинное преобразование к обработанному лицу и маске
+            inv_affine_matrix = cv2.invertAffineTransform(affine_matrix)
+            warped_face = cv2.warpAffine(processed_frame, inv_affine_matrix, (w, h),
+                                         borderMode=cv2.BORDER_CONSTANT,
+                                         flags=cv2.INTER_LANCZOS4)
+            warped_mask = cv2.warpAffine(face_mask, inv_affine_matrix, (w, h),
+                                         borderMode=cv2.BORDER_CONSTANT,
+                                         flags=cv2.INTER_LINEAR)
+
+            # Преобразуем маску в формат float [0,1]
+            warped_mask = warped_mask.astype(float) / 255.0
+            warped_mask = np.expand_dims(warped_mask, axis=2)
+
+            # Применяем маску для комбинирования исходного и обработанного кадров
+            result = warped_face * warped_mask + original_frame * (1 - warped_mask)
+            result = result.astype(np.uint8)
 
             return result
         except Exception as e:
-            print(f"Error restoring frame: {e}")
-            print(f"Processed frame shape: {processed_frame.shape}, dtype: {processed_frame.dtype}")
-            print(f"Box: {box}")
-            # Возвращаем исходный кадр в случае ошибки
+            print(f"Error in restore_single_frame: {e}")
+            # В случае ошибки возвращаем исходный кадр
             return original_frame
 
     # def restore_video(self, faces, video_frames, boxes, affine_matrices):
