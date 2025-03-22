@@ -530,19 +530,39 @@ class LipsyncPipeline(DiffusionPipeline):
                 start_idx = i * num_frames
                 end_idx = min((i + 1) * num_frames, current_batch_size)
 
-                # Check if there are faces in the current group of frames
+                # Проверяем размер группы
+                if end_idx - start_idx < num_frames:
+                    print(f"Skipping incomplete group of {end_idx - start_idx} frames (less than {num_frames})")
+                    # Добавляем оригинальные кадры
+                    for j in range(start_idx, end_idx):
+                        original_frame = video_frames_batch[j]
+                        synced_video_frames_batch.append(torch.from_numpy(original_frame).permute(2, 0, 1))
+                    continue
+
+                # Проверяем, есть ли лица в текущей группе кадров
                 if not any(face_detected_mask_batch[start_idx:end_idx]):
                     print(
                         f"  No faces detected in frames {start_idx + start_frame} to {end_idx + start_frame}, skipping processing")
-                    # Adding original frames
+                    # Добавляем оригинальные кадры
                     original_frames = [torch.from_numpy(frame).permute(2, 0, 1) for frame in
                                        video_frames_batch[start_idx:end_idx]]
                     synced_video_frames_batch.extend(original_frames)
                     continue
 
-                # Extracting data for the current group
+                # Извлекаем данные для текущей группы
                 current_faces = faces_batch[start_idx:end_idx]
-                current_audio_embeds = torch.stack(whisper_chunks[start_frame + start_idx:start_frame + end_idx])
+
+                # Убеждаемся, что у нас достаточно аудио-эмбеддингов
+                current_audio_embeds = []
+                for idx in range(start_frame + start_idx, start_frame + end_idx):
+                    if idx < len(whisper_chunks):
+                        current_audio_embeds.append(whisper_chunks[idx])
+                    else:
+                        # Если не хватает аудио-чанков, дублируем последний
+                        print(f"Warning: Using duplicate audio chunk for frame {idx}")
+                        current_audio_embeds.append(whisper_chunks[-1])
+
+                current_audio_embeds = torch.stack(current_audio_embeds)
                 current_audio_embeds = current_audio_embeds.to(device, dtype=weight_dtype)
 
                 if do_classifier_free_guidance:
@@ -636,14 +656,6 @@ class LipsyncPipeline(DiffusionPipeline):
             restored_frames = []
             for i, frame in enumerate(synced_video_frames_batch):
                 if face_detected_mask_batch[i]:
-                    # Debug
-                    print(f"Frame type: {type(frame)}")
-                    if isinstance(frame, torch.Tensor):
-                        print(f"Frame tensor shape: {frame.shape}, dtype: {frame.dtype}")
-                    if isinstance(frame, np.ndarray):
-                        print(f"Frame array shape: {frame.shape}, dtype: {frame.dtype}")
-                    print(f"Box: {boxes_batch[i]}")
-
                     restored_frame = self.restore_single_frame(
                         frame, video_frames_batch[i], boxes_batch[i], affine_matrices_batch[i]
                     )
