@@ -339,49 +339,31 @@ class LipsyncPipeline(DiffusionPipeline):
         if box is None or affine_matrix is None:
             return original_frame
 
-        # Преобразуем тензор в numpy массив, если нужно
-        if isinstance(processed_frame, torch.Tensor):
-            processed_frame = processed_frame.permute(1, 2, 0).cpu().numpy()
-
-        # Убедимся, что данные имеют корректный тип
-        if processed_frame.dtype != np.uint8:
-            if processed_frame.max() <= 1.0:
-                processed_frame = (processed_frame * 255).astype(np.uint8)
-            else:
-                processed_frame = processed_frame.astype(np.uint8)
-
-        # Создаем копию исходного кадра
-        result = original_frame.copy()
-
         try:
-            # Вместо простой вставки, используем обратное аффинное преобразование
-            # для возврата лица на исходное место
-            h, w = original_frame.shape[:2]
+            # Преобразуем тензор в numpy массив
+            if isinstance(processed_frame, torch.Tensor):
+                # Преобразуем из формата (C, H, W) в (H, W, C)
+                x1, y1, x2, y2 = box
+                height = int(y2 - y1)
+                width = int(x2 - x1)
 
-            # Создаем маску того же размера, что и лицо
-            face_h, face_w = processed_frame.shape[:2]
-            face_mask = np.ones((face_h, face_w), dtype=np.uint8) * 255
+                # Изменяем размер и форматируем как в оригинальном коде
+                processed_frame = torchvision.transforms.functional.resize(
+                    processed_frame, size=(height, width), antialias=True
+                )
+                processed_frame = rearrange(processed_frame, "c h w -> h w c")
+                processed_frame = (processed_frame / 2 + 0.5).clamp(0, 1)
+                processed_frame = (processed_frame * 255).to(torch.uint8).cpu().numpy()
 
-            # Применяем обратное аффинное преобразование к обработанному лицу и маске
-            inv_affine_matrix = cv2.invertAffineTransform(affine_matrix)
-            warped_face = cv2.warpAffine(processed_frame, inv_affine_matrix, (w, h),
-                                         borderMode=cv2.BORDER_CONSTANT,
-                                         flags=cv2.INTER_LANCZOS4)
-            warped_mask = cv2.warpAffine(face_mask, inv_affine_matrix, (w, h),
-                                         borderMode=cv2.BORDER_CONSTANT,
-                                         flags=cv2.INTER_LINEAR)
+            # Используем restorer.restore_img из image_processor
+            out_frame = self.image_processor.restorer.restore_img(
+                original_frame, processed_frame, affine_matrix
+            )
 
-            # Преобразуем маску в формат float [0,1]
-            warped_mask = warped_mask.astype(float) / 255.0
-            warped_mask = np.expand_dims(warped_mask, axis=2)
-
-            # Применяем маску для комбинирования исходного и обработанного кадров
-            result = warped_face * warped_mask + original_frame * (1 - warped_mask)
-            result = result.astype(np.uint8)
-
-            return result
+            return out_frame
         except Exception as e:
             print(f"Error in restore_single_frame: {e}")
+            print(f"Box: {box}")
             # В случае ошибки возвращаем исходный кадр
             return original_frame
 
