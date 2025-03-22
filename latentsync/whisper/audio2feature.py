@@ -83,19 +83,19 @@ class Audio2Feature:
         return selected_feature, selected_idx
 
     def feature2chunks(self, feature_array, fps):
+        total_frames = len(feature_array) * fps / 50.0  # Пересчитываем сколько всего кадров
         whisper_chunks = []
         whisper_idx_multiplier = 50.0 / fps
-        i = 0
-        print(f"video in {fps} FPS, audio idx in 50FPS")
+        print(f"video in {fps} FPS, audio idx in 50FPS, total frames: {total_frames}")
 
-        while True:
+        for i in range(int(total_frames)):
             start_idx = int(i * whisper_idx_multiplier)
-            selected_feature, selected_idx = self.get_sliced_feature(feature_array=feature_array, vid_idx=i, fps=fps)
-            # print(f"i:{i},selected_idx {selected_idx}")
+            if start_idx >= len(feature_array):
+                # Используем последнюю доступную фичу, если вышли за пределы
+                selected_feature = whisper_chunks[-1]
+            else:
+                selected_feature, _ = self.get_sliced_feature(feature_array=feature_array, vid_idx=i, fps=fps)
             whisper_chunks.append(selected_feature)
-            i += 1
-            if start_idx > len(feature_array):
-                break
 
         return whisper_chunks
 
