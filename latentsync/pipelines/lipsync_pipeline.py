@@ -484,6 +484,25 @@ class LipsyncPipeline(DiffusionPipeline):
 
             # Upload only the necessary part of the video
             print(f"Loading frames {start_frame} to {end_frame}")
+
+            if batch_count == 0:
+                temp_dir = "temp_fps_conversion"
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+                os.makedirs(temp_dir, exist_ok=True)
+
+                temp_video_path = os.path.join(temp_dir, "video_25fps.mp4")
+                command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -crf 18 {temp_video_path}"
+                print(f"Converting video to 25 FPS: {command}")
+                subprocess.run(command, shell=True)
+
+                # Обновляем путь к видео для всех последующих операций
+                video_path = temp_video_path
+
+                # Обновляем FPS для последующих вычислений
+                video_fps = 25
+
+            # Теперь читаем из конвертированного видео
             video_frames_batch = read_video_batch(video_path, start_frame, end_frame)
 
             # Processing faces in the batch
