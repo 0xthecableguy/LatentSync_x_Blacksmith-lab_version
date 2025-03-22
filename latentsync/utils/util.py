@@ -41,7 +41,7 @@ def read_json(filepath: str):
         json_dict = json.load(f)
     return json_dict
 
-# # Replaced by version to provide best output video quality
+# # Replaced by read_video_batch to optimize RAM usage
 # def read_video(video_path: str, change_fps=True, use_decord=True):
 #     if change_fps:
 #         temp_dir = "temp"
@@ -60,67 +60,6 @@ def read_json(filepath: str):
 #         return read_video_decord(target_video_path)
 #     else:
 #         return read_video_cv2(target_video_path)
-
-def read_video(video_path: str, change_fps=True, use_decord=True):
-    temp_dir = "temp"
-    if os.path.exists(temp_dir):
-        shutil.rmtree(temp_dir)
-    os.makedirs(temp_dir, exist_ok=True)
-
-    frames_dir = os.path.join(temp_dir, "frames")
-    os.makedirs(frames_dir, exist_ok=True)
-
-    # if change_fps:
-    #     command = (
-    #         f"ffmpeg -loglevel error -y -nostdin -i {video_path} "
-    #         f"-r 25 -vsync cfr -pix_fmt rgb24 "
-    #         f"-sws_flags lanczos+accurate_rnd+full_chroma_int "
-    #         f"-vf 'scale=in_range=full:out_range=full' "
-    #         f"-q:v 0 "
-    #         f"{os.path.join(frames_dir, 'frame_%05d.png')}"
-    #     )
-    # else:
-    #     command = (
-    #         f"ffmpeg -loglevel error -y -nostdin -i {video_path} "
-    #         f"-vsync cfr -pix_fmt rgb24 "
-    #         f"-sws_flags lanczos+accurate_rnd+full_chroma_int "
-    #         f"-vf 'scale=in_range=full:out_range=full' "
-    #         f"-q:v 0 "
-    #         f"{os.path.join(frames_dir, 'frame_%05d.png')}"
-    #     )
-
-    if change_fps:
-        command = (
-            f"ffmpeg -loglevel error -y -nostdin -i {video_path} "
-            f"-r 25 -vsync cfr "
-            f"-sws_flags lanczos+accurate_rnd+full_chroma_int "
-            f"-q:v 0 "
-            f"{os.path.join(frames_dir, 'frame_%05d.png')}"
-        )
-    else:
-        command = (
-            f"ffmpeg -loglevel error -y -nostdin -i {video_path} "
-            f"-vsync cfr "
-            f"-sws_flags lanczos+accurate_rnd+full_chroma_int "
-            f"-q:v 0 "
-            f"{os.path.join(frames_dir, 'frame_%05d.png')}"
-        )
-
-    subprocess.run(command, shell=True)
-
-    frame_files = sorted([os.path.join(frames_dir, f) for f in os.listdir(frames_dir) if f.endswith('.png')])
-    frames = []
-
-    for frame_file in frame_files:
-        from PIL import Image
-        import numpy as np
-
-        img = Image.open(frame_file)
-        frame = np.array(img)
-
-        frames.append(frame)
-
-    return np.array(frames)
 
 def read_video_decord(video_path: str):
     vr = VideoReader(video_path)
@@ -158,6 +97,61 @@ def read_video_cv2(video_path: str):
 
     return np.array(frames)
 
+def read_video_batch(video_path: str, start_frame: int, end_frame: int):
+    """
+    Загружает указанный диапазон кадров из видеофайла
+
+    Args:
+        video_path: Путь к видеофайлу
+        start_frame: Начальный кадр (включительно)
+        end_frame: Конечный кадр (не включительно)
+
+    Returns:
+        np.ndarray: Массив кадров в формате RGB
+    """
+    cap = cv2.VideoCapture(video_path)
+
+    # Устанавливаем позицию на start_frame
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+    frames = []
+    count = 0
+    max_frames = end_frame - start_frame
+
+    while count < max_frames:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frames.append(frame_rgb)
+        count += 1
+
+    cap.release()
+    return np.array(frames)
+
+
+def combine_video_parts(part_paths: list, output_path: str):
+    """
+    Объединяет несколько частей видео в одно
+
+    Args:
+        part_paths: Список путей к частям видео
+        output_path: Путь для сохранения результата
+    """
+    # Создаем файл со списком видео для concat
+    list_file = "temp_file_list.txt"
+    with open(list_file, "w") as f:
+        for part in part_paths:
+            f.write(f"file '{part}'\n")
+
+    # Используем ffmpeg для объединения
+    command = f"ffmpeg -y -loglevel error -f concat -safe 0 -i {list_file} -c copy {output_path}"
+    subprocess.run(command, shell=True)
+
+    # Удаляем временный файл со списком
+    if os.path.exists(list_file):
+        os.remove(list_file)
 
 def read_audio(audio_path: str, audio_sample_rate: int = 16000):
     if audio_path is None:

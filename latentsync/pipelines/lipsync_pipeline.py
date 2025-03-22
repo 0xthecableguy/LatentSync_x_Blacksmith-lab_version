@@ -1,6 +1,7 @@
 # Adapted from https://github.com/guoyww/AnimateDiff/blob/main/animatediff/pipelines/pipeline_animation.py
-
+import gc
 import inspect
+import math
 import os
 import shutil
 from typing import Callable, List, Optional, Union
@@ -29,7 +30,8 @@ from einops import rearrange
 import cv2
 
 from ..models.unet import UNet3DConditionModel
-from ..utils.util import read_video, read_audio, write_video, check_ffmpeg_installed
+from ..utils.util import read_audio, write_video, check_ffmpeg_installed, read_video_batch, \
+    combine_video_parts
 from ..utils.image_processor import ImageProcessor, load_fixed_mask
 from ..whisper.audio2feature import Audio2Feature
 import tqdm
@@ -275,7 +277,93 @@ class LipsyncPipeline(DiffusionPipeline):
         faces = torch.stack(faces)
         return faces, boxes, affine_matrices, face_indices, face_detected_mask
 
-    # # Replaced by restore_video_with_originals fn to organize no face frames proper processing
+    def affine_transform_video_safe(self, video_frames: np.ndarray):
+        """
+        A safe version of the affine_transform_video method that correctly
+        handles frames without faces.
+
+        Args:
+            video_frames: An array of video frames
+
+        Returns:
+            faces: A tensor of processed faces
+            boxes: A list of face bounding boxes
+            affine_matrices: A list of affine matrices
+            face_detected_mask: A face detection mask
+        """
+        faces = []
+        boxes = []
+        affine_matrices = []
+        face_detected_mask = []  # Mask for tracking frames with faces
+
+        print(f"Affine transforming {len(video_frames)} frames...")
+        for frame in tqdm.tqdm(video_frames):
+            try:
+                face, box, affine_matrix = self.image_processor.affine_transform_safe(frame)
+                faces.append(face)
+                boxes.append(box)
+                affine_matrices.append(affine_matrix)
+                # True if the face is found (box and affine_matrix are not None)
+                face_detected_mask.append(box is not None and affine_matrix is not None)
+            except Exception as e:
+                print(f"Error during affine transform: {e}")
+                # In case of an error, add the original frame and mark that the face is not detected
+                resized_frame = cv2.resize(frame, (self.image_processor.resolution, self.image_processor.resolution),
+                                           interpolation=cv2.INTER_LANCZOS4)
+                face_tensor = torch.from_numpy(resized_frame).permute(2, 0, 1)
+                faces.append(face_tensor)
+                boxes.append(None)
+                affine_matrices.append(None)
+                face_detected_mask.append(False)
+
+        # Convert the list of faces into a tensor
+        faces = torch.stack(faces)
+        face_detected_mask = np.array(face_detected_mask)
+
+        return faces, boxes, affine_matrices, face_detected_mask
+
+    def restore_single_frame(self, processed_frame, original_frame, box, affine_matrix):
+        """
+        Restores the processed frame to its original dimensions.
+
+        Args:
+            processed_frame: Processed frame (tensor)
+            original_frame: Original frame
+            box: Face bounding box
+            affine_matrix: Affine transformation matrix
+
+        Returns:
+            np.ndarray: Restored frame
+        """
+        if box is None or affine_matrix is None:
+            # If the face was not detected, we return the original frame
+            return original_frame
+
+        # Converting a tensor to a numpy array
+        if isinstance(processed_frame, torch.Tensor):
+            processed_frame = processed_frame.permute(1, 2, 0).cpu().numpy()
+
+        # Apply the inverse affine transformation
+        h, w = original_frame.shape[:2]
+        restored = np.zeros((h, w, 3), dtype=np.uint8)
+
+        # Creating a mask for the face area
+        mask = np.zeros((h, w), dtype=np.uint8)
+        x1, y1, x2, y2 = box
+        cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
+
+        # Restoring the face area
+        inv_affine = cv2.invertAffineTransform(affine_matrix)
+        face_resized = cv2.resize(processed_frame, (x2 - x1, y2 - y1), interpolation=cv2.INTER_LANCZOS4)
+        restored[y1:y2, x1:x2] = face_resized
+
+        # We use a mask to combine the reconstructed face and the original frame
+        mask = mask / 255.0
+        mask = np.expand_dims(mask, axis=2)
+        restored = restored * mask + original_frame * (1 - mask)
+
+        return restored.astype(np.uint8)
+
     # def restore_video(self, faces, video_frames, boxes, affine_matrices):
     #     video_frames = video_frames[: faces.shape[0]]
     #     out_frames = []
@@ -293,55 +381,30 @@ class LipsyncPipeline(DiffusionPipeline):
     #         out_frames.append(out_frame)
     #     return np.stack(out_frames, axis=0)
 
-    def restore_video_with_originals(self, faces, video_frames, boxes, affine_matrices, face_indices):
-        processed_faces = []
-        print(f"Restoring {len(faces)} faces...")
-        for index, face in enumerate(tqdm.tqdm(faces)):
-            x1, y1, x2, y2 = boxes[index]
-            height = int(y2 - y1)
-            width = int(x2 - x1)
-            face = torchvision.transforms.functional.resize(face, size=(height, width), antialias=True)
-            face = rearrange(face, "c h w -> h w c")
-            face = (face / 2 + 0.5).clamp(0, 1)
-            face = (face * 255).to(torch.uint8).cpu().numpy()
-            frame_index = face_indices[index]
-            out_frame = self.image_processor.restorer.restore_img(video_frames[frame_index], face,
-                                                                  affine_matrices[index])
-            processed_faces.append((frame_index, out_frame))
-
-        out_frames = []
-        processed_dict = dict(processed_faces)
-
-        for i in range(len(video_frames)):
-            if i in processed_dict:
-                out_frames.append(processed_dict[i])
-            else:
-                out_frames.append(video_frames[i])
-
-        return np.stack(out_frames, axis=0)
-
     @torch.no_grad()
     def __call__(
-            self,
-            video_path: str,
-            audio_path: str,
-            video_out_path: str,
-            video_mask_path: str = None,
-            num_frames: int = 16,
-            video_fps: int = 25,
-            audio_sample_rate: int = 16000,
-            height: Optional[int] = None,
-            width: Optional[int] = None,
-            num_inference_steps: int = 20,
-            guidance_scale: float = 1.5,
-            weight_dtype: Optional[torch.dtype] = torch.float16,
-            eta: float = 0.0,
-            mask: str = "fix_mask",
-            mask_image_path: str = "latentsync/utils/mask.png",
-            generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
-            callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
-            callback_steps: Optional[int] = 1,
-            **kwargs,
+        self,
+        video_path: str,
+        audio_path: str,
+        video_out_path: str,
+        video_mask_path: str = None,
+        num_frames: int = 16,
+        video_fps: int = 25,
+        audio_sample_rate: int = 16000,
+        height: Optional[int] = None,
+        width: Optional[int] = None,
+        num_inference_steps: int = 20,
+        guidance_scale: float = 1.5,
+        weight_dtype: Optional[torch.dtype] = torch.float16,
+        eta: float = 0.0,
+        mask: str = "fix_mask",
+        mask_image_path: str = "latentsync/utils/mask.png",
+        batch_size: int = 1,
+        max_batch_frames: int = 64,
+        generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
+        callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
+        callback_steps: Optional[int] = 1,
+        **kwargs,
     ):
         is_train = self.denoising_unet.training
         self.denoising_unet.eval()
@@ -351,12 +414,8 @@ class LipsyncPipeline(DiffusionPipeline):
         # 0. Define call parameters
         batch_size = 1
         device = self._execution_device
-
-        device_str = "cuda" if str(device).startswith("cuda") else "cpu"
-
         mask_image = load_fixed_mask(height, mask_image_path)
-        self.image_processor = ImageProcessor(height, mask=mask, device=device_str, mask_image=mask_image)
-        self.set_progress_bar_config(desc=f"Sample frames: {num_frames}")
+        self.image_processor = ImageProcessor(height, mask=mask, device="cuda", mask_image=mask_image)
 
         # 1. Default height and width to unet
         height = height or self.denoising_unet.config.sample_size * self.vae_scale_factor
@@ -377,176 +436,239 @@ class LipsyncPipeline(DiffusionPipeline):
         # 4. Prepare extra step kwargs.
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
+        # 5. Audio features preparing
+        print("Extracting audio features...")
         whisper_feature = self.audio_encoder.audio2feat(audio_path)
         whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
-
         audio_samples = read_audio(audio_path)
-        video_frames = read_video(video_path, use_decord=False)
 
-        num_inferences = min(len(video_frames), len(whisper_chunks)) // num_frames
-        video_frames = video_frames[: num_inferences * num_frames]
+        #6. Getting information about the video
+        cap = cv2.VideoCapture(video_path)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
 
-        faces, boxes, affine_matrices, face_indices, face_detected_mask = self.affine_transform_video(video_frames)
+        # Creating a temporary directory
+        temp_dir = "temp_processing"
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+        os.makedirs(temp_dir, exist_ok=True)
 
-        if self.denoising_unet.add_audio_layer:
-            face_audio_chunks = []
-            for idx in face_indices:
-                if idx < len(whisper_chunks):
-                    face_audio_chunks.append(whisper_chunks[idx])
-                else:
-                    face_audio_chunks.append(whisper_chunks[-1])
+        # Determining the batch size (multiple of num_frames)
+        batch_frames = min(num_frames * max(1, max_batch_frames // num_frames), max_batch_frames)
+        print(f"Processing video in batches of {batch_frames} frames")
 
-            audio_chunks_for_processing = face_audio_chunks
-            num_inferences = min(len(faces), len(audio_chunks_for_processing)) // num_frames
-        else:
-            num_inferences = len(faces) // num_frames
+        # Preparation for processing
+        processed_frames = 0
+        batch_count = 0
+        part_paths = []
 
-        synced_video_frames = []
-        masked_video_frames = []
-
+        # Number of channels for latent variables
         num_channels_latents = self.vae.config.latent_channels
 
-        # Prepare latent variables
-        all_latents = self.prepare_latents(
-            batch_size,
-            num_frames * num_inferences,
-            num_channels_latents,
-            height,
-            width,
-            weight_dtype,
-            device,
-            generator,
-        )
+        # Progress bar for batches
+        total_batches = math.ceil(total_frames / batch_frames)
+        batch_progress = tqdm.tqdm(total=total_batches, desc="Processing video batches")
 
-        for i in tqdm.tqdm(range(num_inferences), desc="Doing inference..."):
-            if self.denoising_unet.add_audio_layer:
-                audio_embeds = torch.stack(audio_chunks_for_processing[i * num_frames: (i + 1) * num_frames])
-                audio_embeds = audio_embeds.to(device, dtype=weight_dtype)
-                if do_classifier_free_guidance:
-                    null_audio_embeds = torch.zeros_like(audio_embeds)
-                    audio_embeds = torch.cat([null_audio_embeds, audio_embeds])
-            else:
-                audio_embeds = None
+        #7. Video processing in parts
+        while processed_frames < total_frames:
+            # Clearing CUDA memory before processing a new batch
+            torch.cuda.empty_cache()
 
-            inference_faces = faces[i * num_frames: (i + 1) * num_frames]
-            latents = all_latents[:, :, i * num_frames: (i + 1) * num_frames]
-            ref_pixel_values, masked_pixel_values, masks = self.image_processor.prepare_masks_and_masked_images(
-                inference_faces, affine_transform=False
-            )
+            # Defining the boundaries of the current batch
+            start_frame = processed_frames
+            end_frame = min(processed_frames + batch_frames, total_frames)
+            current_batch_size = end_frame - start_frame
 
-            # 7. Prepare mask latent variables
-            mask_latents, masked_image_latents = self.prepare_mask_latents(
-                masks,
-                masked_pixel_values,
+            # Upload only the necessary part of the video
+            print(f"Loading frames {start_frame} to {end_frame}")
+            video_frames_batch = read_video_batch(video_path, start_frame, end_frame)
+
+            # Processing faces in the batch
+            print(f"Processing faces in batch {batch_count + 1}/{total_batches}")
+            faces_batch, boxes_batch, affine_matrices_batch, face_detected_mask_batch = self.affine_transform_video_safe(
+                video_frames_batch)
+
+            # Determining the number of groups by num_frames of frames for inference
+            num_inferences_batch = current_batch_size // num_frames
+            if current_batch_size % num_frames != 0:
+                # Adding another group for the remaining frames
+                num_inferences_batch += 1
+
+            synced_video_frames_batch = []
+
+            # Preparing latent variables for the entire batch
+            all_latents = self.prepare_latents(
+                batch_size,
+                current_batch_size,
+                num_channels_latents,
                 height,
                 width,
                 weight_dtype,
                 device,
                 generator,
-                do_classifier_free_guidance,
             )
 
-            # 8. Prepare image latents
-            ref_latents = self.prepare_image_latents(
-                ref_pixel_values,
-                device,
-                weight_dtype,
-                generator,
-                do_classifier_free_guidance,
-            )
+            #8. Processing each group of frames in the batch
+            for i in range(num_inferences_batch):
+                start_idx = i * num_frames
+                end_idx = min((i + 1) * num_frames, current_batch_size)
 
-            # 9. Denoising loop
-            num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
-            with self.progress_bar(total=num_inference_steps) as progress_bar:
-                for j, t in enumerate(timesteps):
-                    # expand the latents if we are doing classifier free guidance
-                    denoising_unet_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+                # Check if there are faces in the current group of frames
+                if not any(face_detected_mask_batch[start_idx:end_idx]):
+                    print(
+                        f"  No faces detected in frames {start_idx + start_frame} to {end_idx + start_frame}, skipping processing")
+                    # Adding original frames
+                    original_frames = [torch.from_numpy(frame).permute(2, 0, 1) for frame in
+                                       video_frames_batch[start_idx:end_idx]]
+                    synced_video_frames_batch.extend(original_frames)
+                    continue
 
-                    denoising_unet_input = self.scheduler.scale_model_input(denoising_unet_input, t)
+                # Extracting data for the current group
+                current_faces = faces_batch[start_idx:end_idx]
+                current_audio_embeds = torch.stack(whisper_chunks[start_frame + start_idx:start_frame + end_idx])
+                current_audio_embeds = current_audio_embeds.to(device, dtype=weight_dtype)
 
-                    # concat latents, mask, masked_image_latents in the channel dimension
-                    denoising_unet_input = torch.cat(
-                        [denoising_unet_input, mask_latents, masked_image_latents, ref_latents], dim=1
+                if do_classifier_free_guidance:
+                    null_audio_embeds = torch.zeros_like(current_audio_embeds)
+                    current_audio_embeds = torch.cat([null_audio_embeds, current_audio_embeds])
+
+                # Extracting latent variables for the current group
+                latents = all_latents[:, :, start_idx:end_idx]
+
+                # Preparing masks and images with masks
+                ref_pixel_values, masked_pixel_values, masks = self.image_processor.prepare_masks_and_masked_images(
+                    current_faces, affine_transform=False
+                )
+
+                # Preparing latent variables for masks
+                mask_latents, masked_image_latents = self.prepare_mask_latents(
+                    masks,
+                    masked_pixel_values,
+                    height,
+                    width,
+                    weight_dtype,
+                    device,
+                    generator,
+                    do_classifier_free_guidance,
+                )
+
+                # Preparing latent variables for images
+                ref_latents = self.prepare_image_latents(
+                    ref_pixel_values,
+                    device,
+                    weight_dtype,
+                    generator,
+                    do_classifier_free_guidance,
+                )
+
+                # The denoising cycle
+                num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
+                with self.progress_bar(total=num_inference_steps) as progress_bar:
+                    for j, t in enumerate(timesteps):
+                        denoising_unet_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+
+                        denoising_unet_input = self.scheduler.scale_model_input(denoising_unet_input, t)
+
+                        denoising_unet_input = torch.cat(
+                            [denoising_unet_input, mask_latents, masked_image_latents, ref_latents], dim=1
+                        )
+
+                        noise_pred = self.denoising_unet(
+                            denoising_unet_input, t, encoder_hidden_states=current_audio_embeds
+                        ).sample
+
+                        if do_classifier_free_guidance:
+                            noise_pred_uncond, noise_pred_audio = noise_pred.chunk(2)
+                            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_audio - noise_pred_uncond)
+
+                        latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
+
+                        if j == len(timesteps) - 1 or (
+                                (j + 1) > num_warmup_steps and (j + 1) % self.scheduler.order == 0):
+                            progress_bar.update()
+                            if callback is not None and j % callback_steps == 0:
+                                callback(j, t, latents)
+
+                # Decoding latent variables into images
+                decoded_latents = self.decode_latents(latents)
+
+                # Inserting the surrounding pixels back in
+                decoded_latents = self.paste_surrounding_pixels_back(
+                    decoded_latents, ref_pixel_values, 1 - masks, device, weight_dtype
+                )
+
+                # Adding processed frames to the result
+                current_faces_detected = face_detected_mask_batch[start_idx:end_idx]
+
+                # Processing the results for each frame
+                for k, is_face_detected in enumerate(current_faces_detected):
+                    if k < len(decoded_latents):
+                        # If a face is detected, we use the processed frame
+                        if is_face_detected:
+                            synced_video_frames_batch.append(decoded_latents[k])
+                        else:
+                            # If the face is not detected, we use the original frame
+                            orig_frame = torch.from_numpy(video_frames_batch[start_idx + k]).permute(2, 0, 1)
+                            synced_video_frames_batch.append(orig_frame)
+
+                # Clearing the memory after processing the group
+                del latents, mask_latents, masked_image_latents, ref_latents, decoded_latents
+                torch.cuda.empty_cache()
+
+            # Restoring the full video for the current batch
+            restored_frames = []
+            for i, frame in enumerate(synced_video_frames_batch):
+                if face_detected_mask_batch[i]:
+                    restored_frame = self.restore_single_frame(
+                        frame, video_frames_batch[i], boxes_batch[i], affine_matrices_batch[i]
                     )
+                    restored_frames.append(restored_frame)
+                else:
+                    restored_frames.append(video_frames_batch[i])
 
-                    # predict the noise residual
-                    noise_pred = self.denoising_unet(
-                        denoising_unet_input, t, encoder_hidden_states=audio_embeds
-                    ).sample
+            batch_output_path = os.path.join(temp_dir, f"batch_{batch_count:04d}.mp4")
+            write_video(batch_output_path, np.array(restored_frames), fps=video_fps)
+            part_paths.append(batch_output_path)
 
-                    # perform guidance
-                    if do_classifier_free_guidance:
-                        noise_pred_uncond, noise_pred_audio = noise_pred.chunk(2)
-                        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_audio - noise_pred_uncond)
+            del video_frames_batch, faces_batch, boxes_batch, affine_matrices_batch
+            del synced_video_frames_batch, restored_frames, all_latents
+            gc.collect()
+            torch.cuda.empty_cache()
 
-                    # compute the previous noisy sample x_t -> x_t-1
-                    latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
+            processed_frames += current_batch_size
+            batch_count += 1
+            batch_progress.update(1)
 
-                    # call the callback, if provided
-                    if j == len(timesteps) - 1 or ((j + 1) > num_warmup_steps and (j + 1) % self.scheduler.order == 0):
-                        progress_bar.update()
-                        if callback is not None and j % callback_steps == 0:
-                            callback(j, t, latents)
+        batch_progress.close()
 
-            # Recover the pixel values
-            decoded_latents = self.decode_latents(latents)
-            decoded_latents = self.paste_surrounding_pixels_back(
-                decoded_latents, ref_pixel_values, 1 - masks, device, weight_dtype
-            )
-            synced_video_frames.append(decoded_latents)
+        # 9. Combine all the parts of the processed video
+        print("Combining processed video parts...")
+        combined_video_path = os.path.join(temp_dir, "video.mp4")
+        combine_video_parts(part_paths, combined_video_path)
 
-        synced_video_frames = self.restore_video_with_originals(
-            torch.cat(synced_video_frames), video_frames, boxes, affine_matrices, face_indices
-        )
+        # 10. Trim the audio to the length of the video
+        print("Processing audio...")
+        cap = cv2.VideoCapture(combined_video_path)
+        video_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
 
-        audio_samples_remain_length = int(synced_video_frames.shape[0] / video_fps * audio_sample_rate)
+        audio_samples_remain_length = int(video_frame_count / video_fps * audio_sample_rate)
         audio_samples = audio_samples[:audio_samples_remain_length].cpu().numpy()
+        audio_output_path = os.path.join(temp_dir, "audio.wav")
+        sf.write(audio_output_path, audio_samples, audio_sample_rate)
 
+        # 11. Combining video and audio
+        print("Combining video and audio...")
+        command = f"ffmpeg -y -loglevel error -nostdin -i {combined_video_path} -i {audio_output_path} -c:v libx264 -c:a aac -q:v 0 -q:a 0 {video_out_path}"
+        subprocess.run(command, shell=True)
+
+        # 12. Cleaning temporary files
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+
+        # Returning the model to its original mode
         if is_train:
             self.denoising_unet.train()
 
-        temp_dir = "temp"
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
-        os.makedirs(temp_dir, exist_ok=True)
-
-        frames_dir = os.path.join(temp_dir, "output_frames")
-        os.makedirs(frames_dir, exist_ok=True)
-
-        for i, frame in enumerate(synced_video_frames):
-            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            cv2.imwrite(f"{frames_dir}/frame_{i:05d}.png", frame_bgr)
-
-        sf.write(os.path.join(temp_dir, "audio.wav"), audio_samples, audio_sample_rate)
-
-        command = (
-            f"ffmpeg -y -loglevel error -nostdin "
-            f"-framerate 25 -i {frames_dir}/frame_%05d.png "
-            f"-i {os.path.join(temp_dir, 'audio.wav')} "
-            f"-c:v libx264 -profile:v high -preset veryslow -crf 10 "
-            f"-x264opts keyint=25:ref=4:qcomp=0.6 "
-            f"-c:a aac -b:a 192k -ac 2 "
-            f"-pix_fmt yuv420p "
-            # f"-color_primaries 1 -color_trc 1 -colorspace 1 "
-            f"{video_out_path}"
-        )
-
-        subprocess.run(command, shell=True)
-
-        try:
-            if os.path.exists(os.path.join(temp_dir, "frames")):
-                shutil.rmtree(os.path.join(temp_dir, "frames"))
-
-            if os.path.exists(frames_dir):
-                shutil.rmtree(frames_dir)
-
-            audio_file = os.path.join(temp_dir, "audio.wav")
-            if os.path.exists(audio_file):
-                os.remove(audio_file)
-
-            if os.path.exists(temp_dir) and not os.listdir(temp_dir):
-                shutil.rmtree(temp_dir)
-
-            print(f"Temporary files cleaned successfully.")
-        except Exception as e:
-            print(f"Warning: Failed to clean some temporary files: {e}")
+        print(f"Video processing completed: {video_out_path}")
+        return video_out_path
