@@ -691,7 +691,6 @@ class LipsyncPipeline(DiffusionPipeline):
             gc.collect()
             torch.cuda.empty_cache()
 
-            processed_frames += current_batch_size
             batch_count += 1
             batch_progress.update(1)
 
