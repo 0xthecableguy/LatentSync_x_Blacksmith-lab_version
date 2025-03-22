@@ -165,22 +165,48 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
     return audio_samples
 
 
+# def write_video(batch_output_path, frames, fps=25):
+#     height, width = frames[0].shape[:2]
+#     # Используем x264 с лучшими параметрами качества, но быстрее
+#     fourcc = cv2.VideoWriter_fourcc(*'avc1')
+#     out = cv2.VideoWriter(batch_output_path, fourcc, fps, (width, height), isColor=True)
+#
+#     for frame in frames:
+#         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+#         out.write(frame)
+#     out.release()
+
+
 def write_video(batch_output_path, frames, fps=25):
+    """
+    Записывает кадры в видеофайл с максимальным качеством
+
+    Args:
+        batch_output_path: Путь для сохранения видеофайла
+        frames: Массив кадров для записи
+        fps: Частота кадров
+    """
     height, width = frames[0].shape[:2]
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(batch_output_path, fourcc, fps, (width, height), isColor=True)
-    for frame in frames:
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        out.write(frame)
-    out.release()
 
+    # Вместо использования VideoWriter напрямую сохраняем через ffmpeg
+    temp_dir = os.path.dirname(batch_output_path)
+    temp_frames_dir = os.path.join(temp_dir, f"temp_frames_{os.path.basename(batch_output_path).split('.')[0]}")
+    os.makedirs(temp_frames_dir, exist_ok=True)
 
-def write_frames_as_png(output_dir, frames, batch_index):
-    os.makedirs(output_dir, exist_ok=True)
+    # Сохраняем кадры как временные PNG-файлы
     for i, frame in enumerate(frames):
-        frame_path = os.path.join(output_dir, f"batch_{batch_index:04d}_frame_{i:04d}.png")
-        cv2.imwrite(frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_PNG_COMPRESSION, 0])
-    return output_dir
+        frame_path = os.path.join(temp_frames_dir, f"frame_{i:04d}.png")
+        cv2.imwrite(frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+
+    # Используем ffmpeg для создания видео из PNG без потерь
+    frames_pattern = os.path.join(temp_frames_dir, "frame_%04d.png")
+    command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset medium -pix_fmt yuv420p {batch_output_path}"
+    subprocess.run(command, shell=True)
+
+    # Удаляем временные файлы
+    shutil.rmtree(temp_frames_dir)
+
+    return batch_output_path
 
 
 def init_dist(backend="nccl", **kwargs):
