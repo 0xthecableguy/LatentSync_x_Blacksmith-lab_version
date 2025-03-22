@@ -1,5 +1,6 @@
 # Adapted from https://github.com/guoyww/AnimateDiff/blob/main/animatediff/pipelines/pipeline_animation.py
 import gc
+import glob
 import inspect
 import math
 import os
@@ -31,7 +32,7 @@ import cv2
 
 from ..models.unet import UNet3DConditionModel
 from ..utils.util import read_audio, write_video, check_ffmpeg_installed, read_video_batch, \
-    combine_video_parts
+    combine_video_parts, write_frames_as_png
 from ..utils.image_processor import ImageProcessor, load_fixed_mask
 from ..whisper.audio2feature import Audio2Feature
 import tqdm
@@ -682,9 +683,8 @@ class LipsyncPipeline(DiffusionPipeline):
                 else:
                     restored_frames.append(video_frames_batch[i])
 
-            batch_output_path = os.path.join(temp_dir, f"batch_{batch_count:04d}.mp4")
-            write_video(batch_output_path, np.array(restored_frames), fps=video_fps)
-            part_paths.append(batch_output_path)
+            frames_dir = write_frames_as_png(temp_dir, np.array(restored_frames), batch_count)
+            part_paths.append(frames_dir)
 
             del video_frames_batch, faces_batch, boxes_batch, affine_matrices_batch
             del synced_video_frames_batch, restored_frames, all_latents
@@ -703,7 +703,22 @@ class LipsyncPipeline(DiffusionPipeline):
         # 9. Combine all the parts of the processed video
         print("Combining processed video parts...")
         combined_video_path = os.path.join(temp_dir, "video.mp4")
-        combine_video_parts(part_paths, combined_video_path)
+        # Создаем список всех PNG-файлов, отсортированных по имени
+        all_frames = []
+        for batch_dir in part_paths:
+            batch_frames = sorted(glob.glob(os.path.join(batch_dir, "*.png")))
+            all_frames.extend(batch_frames)
+
+        # Создаем файл со списком изображений для FFmpeg
+        frames_list_path = os.path.join(temp_dir, "frames_list.txt")
+        with open(frames_list_path, "w") as f:
+            for frame_path in all_frames:
+                f.write(f"file '{os.path.abspath(frame_path)}'\n")
+                f.write(f"duration {1 / video_fps}\n")
+
+        # Используем FFmpeg для создания видео из изображений
+        command = f"ffmpeg -y -loglevel error -f concat -safe 0 -i {frames_list_path} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv420p {combined_video_path}"
+        subprocess.run(command, shell=True)
 
         # 10. Trim the audio to the length of the video
         print("Processing audio...")
@@ -718,7 +733,10 @@ class LipsyncPipeline(DiffusionPipeline):
 
         # 11. Combining video and audio
         print("Combining video and audio...")
-        command = f"ffmpeg -y -loglevel error -nostdin -i {combined_video_path} -i {audio_output_path} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -c:a flac {video_out_path}"
+        # command = f"ffmpeg -y -loglevel error -nostdin -i {combined_video_path} -i {audio_output_path} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -c:a flac {video_out_path}"
+
+        command = f"ffmpeg -y -loglevel error -nostdin -i {combined_video_path} -i {audio_output_path} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv420p -c:a copy {video_out_path}"
+
         subprocess.run(command, shell=True)
 
         # 12. Cleaning temporary files

@@ -167,13 +167,20 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
 
 def write_video(batch_output_path, frames, fps=25):
     height, width = frames[0].shape[:2]
-    # Используем несжатые кодеки
-    fourcc = cv2.VideoWriter_fourcc(*'RGBA')  # или 'HFYU' (HuffYUV) если доступен
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(batch_output_path, fourcc, fps, (width, height), isColor=True)
     for frame in frames:
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
         out.write(frame)
     out.release()
+
+
+def write_frames_as_png(output_dir, frames, batch_index):
+    os.makedirs(output_dir, exist_ok=True)
+    for i, frame in enumerate(frames):
+        frame_path = os.path.join(output_dir, f"batch_{batch_index:04d}_frame_{i:04d}.png")
+        cv2.imwrite(frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_PNG_COMPRESSION, 0])
+    return output_dir
 
 
 def init_dist(backend="nccl", **kwargs):
