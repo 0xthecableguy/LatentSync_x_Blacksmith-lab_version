@@ -477,13 +477,17 @@ class LipsyncPipeline(DiffusionPipeline):
             # Clearing CUDA memory before processing a new batch
             torch.cuda.empty_cache()
 
+            print(
+                f"Debug: processed_frames = {processed_frames}, total_frames = {total_frames}, batch_frames = {batch_frames}")
+
             # Defining the boundaries of the current batch
             start_frame = processed_frames
             end_frame = min(processed_frames + batch_frames, total_frames)
             current_batch_size = end_frame - start_frame
 
-            # Upload only the necessary part of the video
-            print(f"Loading frames {start_frame} to {end_frame}")
+            print(
+                f"Debug: start_frame = {start_frame}, end_frame = {end_frame}, current_batch_size = {current_batch_size}")
+
 
             if batch_count == 0:
                 temp_dir = "temp_fps_conversion"
@@ -504,6 +508,15 @@ class LipsyncPipeline(DiffusionPipeline):
 
             # Теперь читаем из конвертированного видео
             video_frames_batch = read_video_batch(video_path, start_frame, end_frame)
+
+            print(f"Debug: read_video_batch returned {len(video_frames_batch)} frames")
+
+            # Проверяем, что мы получили кадры
+            if len(video_frames_batch) == 0:
+                print(f"Warning: read_video_batch returned 0 frames for range {start_frame}-{end_frame}")
+                processed_frames = end_frame
+                batch_count += 1
+                continue
 
             # Processing faces in the batch
             print(f"Processing faces in batch {batch_count + 1}/{total_batches}")
@@ -680,6 +693,10 @@ class LipsyncPipeline(DiffusionPipeline):
             processed_frames += current_batch_size
             batch_count += 1
             batch_progress.update(1)
+
+            print(f"Debug: Completing batch {batch_count}, processed_frames was {processed_frames}")
+            processed_frames += current_batch_size
+            print(f"Debug: processed_frames now {processed_frames}")
 
         batch_progress.close()
 
