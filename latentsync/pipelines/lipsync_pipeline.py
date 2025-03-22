@@ -729,7 +729,7 @@ class LipsyncPipeline(DiffusionPipeline):
         audio_samples_remain_length = int(video_frame_count / video_fps * audio_sample_rate)
         audio_samples = audio_samples[:audio_samples_remain_length].cpu().numpy()
         audio_output_path = os.path.join(temp_dir, "audio.wav")
-        sf.write(audio_output_path, audio_samples, audio_sample_rate, format='WAV', subtype='PCM_24')
+        sf.write(audio_output_path, audio_samples, audio_sample_rate)
 
         # 11. Combining video and audio
         print("Combining video and audio...")
