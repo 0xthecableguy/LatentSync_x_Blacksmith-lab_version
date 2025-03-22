@@ -324,45 +324,62 @@ class LipsyncPipeline(DiffusionPipeline):
 
     def restore_single_frame(self, processed_frame, original_frame, box, affine_matrix):
         """
-        Restores the processed frame to its original dimensions.
+        Восстанавливает обработанный кадр в исходные размеры
 
         Args:
-            processed_frame: Processed frame (tensor)
-            original_frame: Original frame
-            box: Face bounding box
-            affine_matrix: Affine transformation matrix
+            processed_frame: Обработанный кадр (тензор)
+            original_frame: Исходный кадр
+            box: Бокс лица
+            affine_matrix: Аффинная матрица
 
         Returns:
-            np.ndarray: Restored frame
+            np.ndarray: Восстановленный кадр
         """
+        # Если лицо не было обнаружено, возвращаем исходный кадр
         if box is None or affine_matrix is None:
-            # If the face was not detected, we return the original frame
             return original_frame
 
-        # Converting a tensor to a numpy array
+        # Преобразуем тензор в numpy массив, если нужно
         if isinstance(processed_frame, torch.Tensor):
             processed_frame = processed_frame.permute(1, 2, 0).cpu().numpy()
 
-        # Apply the inverse affine transformation
-        h, w = original_frame.shape[:2]
-        restored = np.zeros((h, w, 3), dtype=np.uint8)
+        # Убедимся, что данные имеют корректный тип и размерность
+        if processed_frame.ndim != 3 or processed_frame.shape[2] != 3:
+            print(f"Warning: Invalid processed frame shape: {processed_frame.shape}")
+            return original_frame
 
-        # Creating a mask for the face area
-        mask = np.zeros((h, w), dtype=np.uint8)
+        # Приведем к правильному типу данных для OpenCV
+        if processed_frame.dtype != np.uint8:
+            if processed_frame.max() <= 1.0:
+                processed_frame = (processed_frame * 255).astype(np.uint8)
+            else:
+                processed_frame = processed_frame.astype(np.uint8)
+
+        # Проверим корректность размеров бокса
         x1, y1, x2, y2 = box
-        cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
+        width, height = x2 - x1, y2 - y1
 
-        # Restoring the face area
-        inv_affine = cv2.invertAffineTransform(affine_matrix)
-        face_resized = cv2.resize(processed_frame, (x2 - x1, y2 - y1), interpolation=cv2.INTER_LANCZOS4)
-        restored[y1:y2, x1:x2] = face_resized
+        if width <= 0 or height <= 0:
+            print(f"Warning: Invalid box dimensions: {box}")
+            return original_frame
 
-        # We use a mask to combine the reconstructed face and the original frame
-        mask = mask / 255.0
-        mask = np.expand_dims(mask, axis=2)
-        restored = restored * mask + original_frame * (1 - mask)
+        try:
+            # Попытка изменить размер кадра
+            face_resized = cv2.resize(processed_frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
 
-        return restored.astype(np.uint8)
+            # Создаем копию исходного кадра для результата
+            result = original_frame.copy()
+
+            # Вставляем обработанное лицо
+            result[y1:y2, x1:x2] = face_resized
+
+            return result
+        except Exception as e:
+            print(f"Error restoring frame: {e}")
+            print(f"Processed frame shape: {processed_frame.shape}, dtype: {processed_frame.dtype}")
+            print(f"Box: {box}")
+            # Возвращаем исходный кадр в случае ошибки
+            return original_frame
 
     # def restore_video(self, faces, video_frames, boxes, affine_matrices):
     #     video_frames = video_frames[: faces.shape[0]]
@@ -619,6 +636,14 @@ class LipsyncPipeline(DiffusionPipeline):
             restored_frames = []
             for i, frame in enumerate(synced_video_frames_batch):
                 if face_detected_mask_batch[i]:
+                    # Debug
+                    print(f"Frame type: {type(frame)}")
+                    if isinstance(frame, torch.Tensor):
+                        print(f"Frame tensor shape: {frame.shape}, dtype: {frame.dtype}")
+                    if isinstance(frame, np.ndarray):
+                        print(f"Frame array shape: {frame.shape}, dtype: {frame.dtype}")
+                    print(f"Box: {boxes_batch[i]}")
+
                     restored_frame = self.restore_single_frame(
                         frame, video_frames_batch[i], boxes_batch[i], affine_matrices_batch[i]
                     )
