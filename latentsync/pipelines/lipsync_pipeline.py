@@ -863,6 +863,9 @@ class LipsyncPipeline(DiffusionPipeline):
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
 
+        if os.path.exists(temp_fps_dir):
+            shutil.rmtree(temp_fps_dir)
+
         # Returning the model to its original mode
         if is_train:
             self.denoising_unet.train()
