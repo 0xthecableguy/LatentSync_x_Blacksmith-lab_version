@@ -324,30 +324,30 @@ class LipsyncPipeline(DiffusionPipeline):
 
     def restore_single_frame(self, processed_frame, original_frame, box, affine_matrix):
         """
-        Восстанавливает обработанный кадр в исходные размеры
+        Restores the processed frame to its original dimensions.
 
         Args:
-            processed_frame: Обработанный кадр (тензор)
-            original_frame: Исходный кадр
-            box: Бокс лица
-            affine_matrix: Аффинная матрица
+            processed_frame: Processed frame (tensor).
+            original_frame: Original frame.
+            box: Face bounding box.
+            affine_matrix: Affine transformation matrix.
 
         Returns:
-            np.ndarray: Восстановленный кадр
+            np.ndarray: Restored frame.
         """
-        # Если лицо не было обнаружено, возвращаем исходный кадр
+        # If the face was not detected, we return the original frame
         if box is None or affine_matrix is None:
             return original_frame
 
         try:
-            # Преобразуем тензор в numpy массив
+            # Converting a tensor to a numpy array
             if isinstance(processed_frame, torch.Tensor):
-                # Преобразуем из формата (C, H, W) в (H, W, C)
+                # Convert from (C, H, W) format to (H, W, C)
                 x1, y1, x2, y2 = box
                 height = int(y2 - y1)
                 width = int(x2 - x1)
 
-                # Изменяем размер и форматируем как в оригинальном коде
+                # Resizing and formatting as in the original code
                 processed_frame = torchvision.transforms.functional.resize(
                     processed_frame, size=(height, width), antialias=True
                 )
@@ -355,7 +355,7 @@ class LipsyncPipeline(DiffusionPipeline):
                 processed_frame = (processed_frame / 2 + 0.5).clamp(0, 1)
                 processed_frame = (processed_frame * 255).to(torch.uint8).cpu().numpy()
 
-            # Используем restorer.restore_img из image_processor
+            # Using restorer.restore_img from image_processor
             out_frame = self.image_processor.restorer.restore_img(
                 original_frame, processed_frame, affine_matrix
             )
@@ -364,7 +364,7 @@ class LipsyncPipeline(DiffusionPipeline):
         except Exception as e:
             print(f"Error in restore_single_frame: {e}")
             print(f"Box: {box}")
-            # В случае ошибки возвращаем исходный кадр
+            # Returning the original frame in case of an error
             return original_frame
 
     # def restore_video(self, faces, video_frames, boxes, affine_matrices):
@@ -443,8 +443,23 @@ class LipsyncPipeline(DiffusionPipeline):
         print("Extracting audio features...")
         whisper_feature = self.audio_encoder.audio2feat(audio_path)
         whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
-        print(f"Video in {video_fps} FPS, audio chunks created for {video_fps} FPS")
+        print(f"Audio chunks created for {video_fps} FPS")
         audio_samples = read_audio(audio_path)
+
+        # Converting video to 25 FPS first
+        temp_fps_dir = "temp_fps_conversion"
+        if os.path.exists(temp_fps_dir):
+            shutil.rmtree(temp_fps_dir)
+        os.makedirs(temp_fps_dir, exist_ok=True)
+
+        temp_video_path = os.path.join(temp_fps_dir, "video_25fps.mp4")
+        command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p {temp_video_path}"
+        print(f"Converting video to 25 FPS: {command}")
+        subprocess.run(command, shell=True)
+
+        # Update video path for all subsequent operations and FPS for subsequent calculations
+        video_path = temp_video_path
+        video_fps = 25
 
         #6. Getting information about the video
         cap = cv2.VideoCapture(video_path)
@@ -456,6 +471,11 @@ class LipsyncPipeline(DiffusionPipeline):
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
         os.makedirs(temp_dir, exist_ok=True)
+
+        print(f"Converted video info: {total_frames} frames at {video_fps} FPS")
+
+        total_frames = min(total_frames, len(whisper_chunks))
+        print(f"Will process {total_frames} frames")
 
         # Determining the batch size (multiple of num_frames)
         batch_frames = min(num_frames * max(1, max_batch_frames // num_frames), max_batch_frames)
@@ -489,30 +509,12 @@ class LipsyncPipeline(DiffusionPipeline):
             print(
                 f"Debug: start_frame = {start_frame}, end_frame = {end_frame}, current_batch_size = {current_batch_size}")
 
-
-            if batch_count == 0:
-                temp_dir = "temp_fps_conversion"
-                if os.path.exists(temp_dir):
-                    shutil.rmtree(temp_dir)
-                os.makedirs(temp_dir, exist_ok=True)
-
-                temp_video_path = os.path.join(temp_dir, "video_25fps.mp4")
-                command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p {temp_video_path}"
-                print(f"Converting video to 25 FPS: {command}")
-                subprocess.run(command, shell=True)
-
-                # Обновляем путь к видео для всех последующих операций
-                video_path = temp_video_path
-
-                # Обновляем FPS для последующих вычислений
-                video_fps = 25
-
-            # Теперь читаем из конвертированного видео
+            # Reading from the converted video
             video_frames_batch = read_video_batch(video_path, start_frame, end_frame)
 
             print(f"Debug: read_video_batch returned {len(video_frames_batch)} frames")
 
-            # Проверяем, что мы получили кадры
+            # Check that we have received the frames
             if len(video_frames_batch) == 0:
                 print(f"Warning: read_video_batch returned 0 frames for range {start_frame}-{end_frame}")
                 processed_frames = end_frame
@@ -549,35 +551,35 @@ class LipsyncPipeline(DiffusionPipeline):
                 start_idx = i * num_frames
                 end_idx = min((i + 1) * num_frames, current_batch_size)
 
-                # Проверяем размер группы
+                # Checking the group size
                 if end_idx - start_idx < num_frames:
                     print(f"Skipping incomplete group of {end_idx - start_idx} frames (less than {num_frames})")
-                    # Добавляем оригинальные кадры
+                    # Adding original frames
                     for j in range(start_idx, end_idx):
                         original_frame = video_frames_batch[j]
                         synced_video_frames_batch.append(torch.from_numpy(original_frame).permute(2, 0, 1))
                     continue
 
-                # Проверяем, есть ли лица в текущей группе кадров
+                # Check if there are faces in the current group of frames
                 if not any(face_detected_mask_batch[start_idx:end_idx]):
                     print(
                         f"  No faces detected in frames {start_idx + start_frame} to {end_idx + start_frame}, skipping processing")
-                    # Добавляем оригинальные кадры
+                    # Adding original frames
                     original_frames = [torch.from_numpy(frame).permute(2, 0, 1) for frame in
                                        video_frames_batch[start_idx:end_idx]]
                     synced_video_frames_batch.extend(original_frames)
                     continue
 
-                # Извлекаем данные для текущей группы
+                # Extracting data for the current group
                 current_faces = faces_batch[start_idx:end_idx]
 
-                # Убеждаемся, что у нас достаточно аудио-эмбеддингов
+                # Making sure we have enough audio embeddings
                 current_audio_embeds = []
                 for idx in range(start_frame + start_idx, start_frame + end_idx):
                     if idx < len(whisper_chunks):
                         current_audio_embeds.append(whisper_chunks[idx])
                     else:
-                        # Если не хватает аудио-чанков, дублируем последний
+                        # If there are not enough audio chunks, duplicate the last one
                         print(f"Warning: Using duplicate audio chunk for frame {idx}")
                         current_audio_embeds.append(whisper_chunks[-1])
 

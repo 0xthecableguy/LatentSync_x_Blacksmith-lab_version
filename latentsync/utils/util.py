@@ -99,19 +99,14 @@ def read_video_cv2(video_path: str):
 
 def read_video_batch(video_path: str, start_frame: int, end_frame: int):
     """
-    Загружает указанный диапазон кадров из видеофайла
-
-    Args:
-        video_path: Путь к видеофайлу
-        start_frame: Начальный кадр (включительно)
-        end_frame: Конечный кадр (не включительно)
+    Loads the specified range of frames from a video file.
 
     Returns:
-        np.ndarray: Массив кадров в формате RGB
+        np.ndarray: Array of frames in RGB format.
     """
+
     cap = cv2.VideoCapture(video_path)
 
-    # Устанавливаем позицию на start_frame
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
     frames = []
@@ -132,24 +127,14 @@ def read_video_batch(video_path: str, start_frame: int, end_frame: int):
 
 
 def combine_video_parts(part_paths: list, output_path: str):
-    """
-    Объединяет несколько частей видео в одно
-
-    Args:
-        part_paths: Список путей к частям видео
-        output_path: Путь для сохранения результата
-    """
-    # Создаем файл со списком видео для concat
     list_file = "temp_file_list.txt"
     with open(list_file, "w") as f:
         for part in part_paths:
             f.write(f"file '{part}'\n")
 
-    # Используем ffmpeg для объединения
     command = f"ffmpeg -y -loglevel error -f concat -safe 0 -i {list_file} -c copy {output_path}"
     subprocess.run(command, shell=True)
 
-    # Удаляем временный файл со списком
     if os.path.exists(list_file):
         os.remove(list_file)
 
@@ -167,7 +152,6 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
 
 # def write_video(batch_output_path, frames, fps=25):
 #     height, width = frames[0].shape[:2]
-#     # Используем x264 с лучшими параметрами качества, но быстрее
 #     fourcc = cv2.VideoWriter_fourcc(*'avc1')
 #     out = cv2.VideoWriter(batch_output_path, fourcc, fps, (width, height), isColor=True)
 #
@@ -179,31 +163,27 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
 
 def write_video(batch_output_path, frames, fps=25):
     """
-    Записывает кадры в видеофайл с максимальным качеством
+    Saves frames to a video file with maximum quality.
 
     Args:
-        batch_output_path: Путь для сохранения видеофайла
-        frames: Массив кадров для записи
-        fps: Частота кадров
+        batch_output_path: Path to save the video file.
+        frames: Array of frames to write.
+        fps: Frame rate.
     """
     height, width = frames[0].shape[:2]
 
-    # Вместо использования VideoWriter напрямую сохраняем через ffmpeg
     temp_dir = os.path.dirname(batch_output_path)
     temp_frames_dir = os.path.join(temp_dir, f"temp_frames_{os.path.basename(batch_output_path).split('.')[0]}")
     os.makedirs(temp_frames_dir, exist_ok=True)
 
-    # Сохраняем кадры как временные PNG-файлы
     for i, frame in enumerate(frames):
         frame_path = os.path.join(temp_frames_dir, f"frame_{i:04d}.png")
         cv2.imwrite(frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
 
-    # Используем ffmpeg для создания видео из PNG без потерь
     frames_pattern = os.path.join(temp_frames_dir, "frame_%04d.png")
     command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
     subprocess.run(command, shell=True)
 
-    # Удаляем временные файлы
     shutil.rmtree(temp_frames_dir)
 
     return batch_output_path
