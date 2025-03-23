@@ -551,13 +551,147 @@ class LipsyncPipeline(DiffusionPipeline):
                 start_idx = i * num_frames
                 end_idx = min((i + 1) * num_frames, current_batch_size)
 
-                # Checking the group size
+                # Handling incomplete groups by padding
                 if end_idx - start_idx < num_frames:
-                    print(f"Skipping incomplete group of {end_idx - start_idx} frames (less than {num_frames})")
-                    # Adding original frames
-                    for j in range(start_idx, end_idx):
-                        original_frame = video_frames_batch[j]
-                        synced_video_frames_batch.append(torch.from_numpy(original_frame).permute(2, 0, 1))
+                    print(
+                        f"Incomplete group of {end_idx - start_idx} frames (less than {num_frames}), padding to full size")
+
+                    # Create padded versions of the data
+                    padding_needed = num_frames - (end_idx - start_idx)
+
+                    # Pad video frames by duplicating the last frame
+                    last_frame = video_frames_batch[end_idx - 1]
+                    padded_frames = np.array([video_frames_batch[j] for j in range(start_idx, end_idx)])
+                    for _ in range(padding_needed):
+                        padded_frames = np.append(padded_frames, [last_frame], axis=0)
+
+                    # Pad faces
+                    last_face = faces_batch[end_idx - 1]
+                    padded_faces = faces_batch[start_idx:end_idx].clone()
+                    padding_faces = last_face.unsqueeze(0).repeat(padding_needed, 1, 1, 1)
+                    padded_faces = torch.cat([padded_faces, padding_faces], dim=0)
+
+                    # Pad face detection mask
+                    padded_mask = np.append(face_detected_mask_batch[start_idx:end_idx],
+                                            [face_detected_mask_batch[end_idx - 1]] * padding_needed)
+
+                    # Check if there are faces in the padded group
+                    if not any(padded_mask):
+                        print(
+                            f"  No faces detected in frames {start_idx + start_frame} to {end_idx + start_frame}, using original frames")
+                        original_frames = [torch.from_numpy(frame).permute(2, 0, 1) for frame in
+                                           video_frames_batch[start_idx:end_idx]]
+                        synced_video_frames_batch.extend(original_frames)
+                        continue
+
+                    # Use the padded data for processing
+                    current_faces = padded_faces
+
+                    # Making sure we have enough audio embeddings
+                    current_audio_embeds = []
+                    for j in range(end_idx - start_idx + padding_needed):
+                        idx = start_frame + start_idx + j
+                        if j < end_idx - start_idx:
+                            if idx < len(whisper_chunks):
+                                current_audio_embeds.append(whisper_chunks[idx])
+                            else:
+                                # If there are not enough audio chunks, duplicate the last one
+                                print(f"Warning: Using duplicate audio chunk for frame {idx}")
+                                current_audio_embeds.append(whisper_chunks[-1])
+                        else:
+                            # Padding audio with duplicates of last frame
+                            current_audio_embeds.append(current_audio_embeds[-1])
+
+                    current_audio_embeds = torch.stack(current_audio_embeds)
+                    current_audio_embeds = current_audio_embeds.to(device, dtype=weight_dtype)
+
+                    if do_classifier_free_guidance:
+                        null_audio_embeds = torch.zeros_like(current_audio_embeds)
+                        current_audio_embeds = torch.cat([null_audio_embeds, current_audio_embeds])
+
+                    # Extracting latent variables for the padded group
+                    latents = all_latents[:, :, start_idx:end_idx]
+
+                    # Padding latents
+                    padding_latents = latents[:, :, -1:].repeat(1, 1, padding_needed)
+                    latents = torch.cat([latents, padding_latents], dim=2)
+
+                    # Preparing masks and images with masks
+                    ref_pixel_values, masked_pixel_values, masks = self.image_processor.prepare_masks_and_masked_images(
+                        current_faces, affine_transform=False
+                    )
+
+                    # Preparing latent variables for masks
+                    mask_latents, masked_image_latents = self.prepare_mask_latents(
+                        masks,
+                        masked_pixel_values,
+                        height,
+                        width,
+                        weight_dtype,
+                        device,
+                        generator,
+                        do_classifier_free_guidance,
+                    )
+
+                    # Preparing latent variables for images
+                    ref_latents = self.prepare_image_latents(
+                        ref_pixel_values,
+                        device,
+                        weight_dtype,
+                        generator,
+                        do_classifier_free_guidance,
+                    )
+
+                    # The denoising cycle
+                    num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
+                    with self.progress_bar(total=num_inference_steps) as progress_bar:
+                        for j, t in enumerate(timesteps):
+                            denoising_unet_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+
+                            denoising_unet_input = self.scheduler.scale_model_input(denoising_unet_input, t)
+
+                            denoising_unet_input = torch.cat(
+                                [denoising_unet_input, mask_latents, masked_image_latents, ref_latents], dim=1
+                            )
+
+                            noise_pred = self.denoising_unet(
+                                denoising_unet_input, t, encoder_hidden_states=current_audio_embeds
+                            ).sample
+
+                            if do_classifier_free_guidance:
+                                noise_pred_uncond, noise_pred_audio = noise_pred.chunk(2)
+                                noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_audio - noise_pred_uncond)
+
+                            latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
+
+                            if j == len(timesteps) - 1 or (
+                                    (j + 1) > num_warmup_steps and (j + 1) % self.scheduler.order == 0):
+                                progress_bar.update()
+                                if callback is not None and j % callback_steps == 0:
+                                    callback(j, t, latents)
+
+                    # Decoding latent variables into images
+                    decoded_latents = self.decode_latents(latents)
+
+                    # Inserting the surrounding pixels back in
+                    decoded_latents = self.paste_surrounding_pixels_back(
+                        decoded_latents, ref_pixel_values, 1 - masks, device, weight_dtype
+                    )
+
+                    # Take only the original frames (discard padded results)
+                    original_count = end_idx - start_idx
+                    for k in range(original_count):
+                        is_face_detected = face_detected_mask_batch[start_idx + k]
+                        if is_face_detected:
+                            synced_video_frames_batch.append(decoded_latents[k])
+                        else:
+                            orig_frame = torch.from_numpy(video_frames_batch[start_idx + k]).permute(2, 0, 1)
+                            synced_video_frames_batch.append(orig_frame)
+
+                    # Clearing the memory after processing the group
+                    del latents, mask_latents, masked_image_latents, ref_latents, decoded_latents
+                    torch.cuda.empty_cache()
+
                     continue
 
                 # Check if there are faces in the current group of frames
