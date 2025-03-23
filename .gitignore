@@ -48,3 +48,6 @@ wandb/
 !/assets/*
 !/docs/*
 !/internal/*.png
+
+# local
+/reserve/

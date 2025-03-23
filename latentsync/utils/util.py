@@ -41,7 +41,7 @@ def read_json(filepath: str):
         json_dict = json.load(f)
     return json_dict
 
-# # Replaced by version to provide best output video quality
+# # Replaced by read_video_batch to optimize RAM usage
 # def read_video(video_path: str, change_fps=True, use_decord=True):
 #     if change_fps:
 #         temp_dir = "temp"
@@ -60,67 +60,6 @@ def read_json(filepath: str):
 #         return read_video_decord(target_video_path)
 #     else:
 #         return read_video_cv2(target_video_path)
-
-def read_video(video_path: str, change_fps=True, use_decord=True):
-    temp_dir = "temp"
-    if os.path.exists(temp_dir):
-        shutil.rmtree(temp_dir)
-    os.makedirs(temp_dir, exist_ok=True)
-
-    frames_dir = os.path.join(temp_dir, "frames")
-    os.makedirs(frames_dir, exist_ok=True)
-
-    # if change_fps:
-    #     command = (
-    #         f"ffmpeg -loglevel error -y -nostdin -i {video_path} "
-    #         f"-r 25 -vsync cfr -pix_fmt rgb24 "
-    #         f"-sws_flags lanczos+accurate_rnd+full_chroma_int "
-    #         f"-vf 'scale=in_range=full:out_range=full' "
-    #         f"-q:v 0 "
-    #         f"{os.path.join(frames_dir, 'frame_%05d.png')}"
-    #     )
-    # else:
-    #     command = (
-    #         f"ffmpeg -loglevel error -y -nostdin -i {video_path} "
-    #         f"-vsync cfr -pix_fmt rgb24 "
-    #         f"-sws_flags lanczos+accurate_rnd+full_chroma_int "
-    #         f"-vf 'scale=in_range=full:out_range=full' "
-    #         f"-q:v 0 "
-    #         f"{os.path.join(frames_dir, 'frame_%05d.png')}"
-    #     )
-
-    if change_fps:
-        command = (
-            f"ffmpeg -loglevel error -y -nostdin -i {video_path} "
-            f"-r 25 -vsync cfr "
-            f"-sws_flags lanczos+accurate_rnd+full_chroma_int "
-            f"-q:v 0 "
-            f"{os.path.join(frames_dir, 'frame_%05d.png')}"
-        )
-    else:
-        command = (
-            f"ffmpeg -loglevel error -y -nostdin -i {video_path} "
-            f"-vsync cfr "
-            f"-sws_flags lanczos+accurate_rnd+full_chroma_int "
-            f"-q:v 0 "
-            f"{os.path.join(frames_dir, 'frame_%05d.png')}"
-        )
-
-    subprocess.run(command, shell=True)
-
-    frame_files = sorted([os.path.join(frames_dir, f) for f in os.listdir(frames_dir) if f.endswith('.png')])
-    frames = []
-
-    for frame_file in frame_files:
-        from PIL import Image
-        import numpy as np
-
-        img = Image.open(frame_file)
-        frame = np.array(img)
-
-        frames.append(frame)
-
-    return np.array(frames)
 
 def read_video_decord(video_path: str):
     vr = VideoReader(video_path)
@@ -158,6 +97,46 @@ def read_video_cv2(video_path: str):
 
     return np.array(frames)
 
+def read_video_batch(video_path: str, start_frame: int, end_frame: int):
+    """
+    Loads the specified range of frames from a video file.
+
+    Returns:
+        np.ndarray: Array of frames in RGB format.
+    """
+
+    cap = cv2.VideoCapture(video_path)
+
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+    frames = []
+    count = 0
+    max_frames = end_frame - start_frame
+
+    while count < max_frames:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frames.append(frame_rgb)
+        count += 1
+
+    cap.release()
+    return np.array(frames)
+
+
+def combine_video_parts(part_paths: list, output_path: str):
+    list_file = "temp_file_list.txt"
+    with open(list_file, "w") as f:
+        for part in part_paths:
+            f.write(f"file '{part}'\n")
+
+    command = f"ffmpeg -y -loglevel error -f concat -safe 0 -i {list_file} -c copy {output_path}"
+    subprocess.run(command, shell=True)
+
+    if os.path.exists(list_file):
+        os.remove(list_file)
 
 def read_audio(audio_path: str, audio_sample_rate: int = 16000):
     if audio_path is None:
@@ -171,14 +150,43 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
     return audio_samples
 
 
-def write_video(video_output_path: str, video_frames: np.ndarray, fps: int):
-    height, width = video_frames[0].shape[:2]
-    out = cv2.VideoWriter(video_output_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height))
-    # out = cv2.VideoWriter(video_output_path, cv2.VideoWriter_fourcc(*"vp09"), fps, (width, height))
-    for frame in video_frames:
-        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        out.write(frame)
-    out.release()
+# def write_video(batch_output_path, frames, fps=25):
+#     height, width = frames[0].shape[:2]
+#     fourcc = cv2.VideoWriter_fourcc(*'avc1')
+#     out = cv2.VideoWriter(batch_output_path, fourcc, fps, (width, height), isColor=True)
+#
+#     for frame in frames:
+#         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+#         out.write(frame)
+#     out.release()
+
+
+def write_video(batch_output_path, frames, fps=25):
+    """
+    Saves frames to a video file with maximum quality.
+
+    Args:
+        batch_output_path: Path to save the video file.
+        frames: Array of frames to write.
+        fps: Frame rate.
+    """
+    height, width = frames[0].shape[:2]
+
+    temp_dir = os.path.dirname(batch_output_path)
+    temp_frames_dir = os.path.join(temp_dir, f"temp_frames_{os.path.basename(batch_output_path).split('.')[0]}")
+    os.makedirs(temp_frames_dir, exist_ok=True)
+
+    for i, frame in enumerate(frames):
+        frame_path = os.path.join(temp_frames_dir, f"frame_{i:04d}.png")
+        cv2.imwrite(frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+
+    frames_pattern = os.path.join(temp_frames_dir, "frame_%04d.png")
+    command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
+    subprocess.run(command, shell=True)
+
+    shutil.rmtree(temp_frames_dir)
+
+    return batch_output_path
 
 
 def init_dist(backend="nccl", **kwargs):

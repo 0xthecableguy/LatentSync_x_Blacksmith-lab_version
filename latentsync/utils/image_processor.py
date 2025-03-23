@@ -115,7 +115,7 @@ class ImageProcessor:
 
         return pixel_values, masked_pixel_values, mask
 
-    def affine_transform(self, image: torch.Tensor) -> np.ndarray:
+    def affine_transform(self, image: torch.Tensor, allow_multi_faces: bool = True) -> np.ndarray:
         # image = rearrange(image, "c h w-> h w c").numpy()
         if self.fa is None:
             landmark_coordinates = np.array(self.detect_facial_landmarks(image))
@@ -123,7 +123,9 @@ class ImageProcessor:
         else:
             detected_faces = self.fa.get_landmarks(image)
             if detected_faces is None:
-                return None
+                raise RuntimeError("Face not detected")
+            if not allow_multi_faces and len(detected_faces) > 1:
+                raise RuntimeError("More than one face detected")
             lm68 = detected_faces[0]
 
         points = self.smoother.smooth(lm68)
@@ -139,6 +141,62 @@ class ImageProcessor:
         face = cv2.resize(face, (self.resolution, self.resolution), interpolation=cv2.INTER_LANCZOS4)
         face = rearrange(torch.from_numpy(face), "h w c -> c h w")
         return face, box, affine_matrix
+
+    def affine_transform_safe(self, image: torch.Tensor, allow_multi_faces: bool = True) -> np.ndarray:
+        """
+        A safe version of the affine_transform method that does not throw an exception
+        if no face is detected.
+
+        Args:
+            image: Original image.
+            allow_multi_faces: Allow processing of multiple faces.
+
+        Returns:
+            face: Processed face image.
+            box: Face bounding box.
+            affine_matrix: Affine transformation matrix.
+        """
+
+        try:
+            if self.fa is None:
+                landmark_coordinates = np.array(self.detect_facial_landmarks(image))
+                lm68 = mediapipe_lm478_to_face_alignment_lm68(landmark_coordinates)
+            else:
+                detected_faces = self.fa.get_landmarks(image)
+                if detected_faces is None:
+                    # Returning the original frame and mark that the face has not been found
+                    face = cv2.resize(image.copy(), (self.resolution, self.resolution),
+                                      interpolation=cv2.INTER_LANCZOS4)
+                    face = rearrange(torch.from_numpy(face), "h w c -> c h w")
+                    return face, None, None
+
+                if not allow_multi_faces and len(detected_faces) > 1:
+                    # Choose the first person (customizable face selection logic)
+                    lm68 = detected_faces[0]
+                else:
+                    lm68 = detected_faces[0]
+
+            # The rest of the face processing logic
+            points = self.smoother.smooth(lm68)
+            lmk3_ = np.zeros((3, 2))
+            lmk3_[0] = points[17:22].mean(0)
+            lmk3_[1] = points[22:27].mean(0)
+            lmk3_[2] = points[27:36].mean(0)
+
+            face, affine_matrix = self.restorer.align_warp_face(
+                image.copy(), lmks3=lmk3_, smooth=True, border_mode="constant"
+            )
+            box = [0, 0, face.shape[1], face.shape[0]]  # x1, y1, x2, y2
+            face = cv2.resize(face, (self.resolution, self.resolution), interpolation=cv2.INTER_LANCZOS4)
+            face = rearrange(torch.from_numpy(face), "h w c -> c h w")
+            return face, box, affine_matrix
+
+        except Exception as e:
+            # Returning the original frame in case of any error
+            print(f"Warning: Error in face detection/alignment: {e}")
+            face = cv2.resize(image.copy(), (self.resolution, self.resolution), interpolation=cv2.INTER_LANCZOS4)
+            face = rearrange(torch.from_numpy(face), "h w c -> c h w")
+            return face, None, None
 
     def preprocess_fixed_mask_image(self, image: torch.Tensor, affine_transform=False):
         if affine_transform:
