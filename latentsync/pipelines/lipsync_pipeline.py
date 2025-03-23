@@ -521,29 +521,23 @@ class LipsyncPipeline(DiffusionPipeline):
                 batch_count += 1
                 continue
 
-            if len(video_frames_batch) % num_frames != 0:
-                padding_needed = num_frames - (len(video_frames_batch) % num_frames)
-                last_frame = video_frames_batch[-1].copy()
-                padding = np.array([last_frame] * padding_needed)
-                video_frames_batch_padded = np.concatenate([video_frames_batch, padding])
-                print(f"Padded batch with {padding_needed} frames to make size divisible by {num_frames}")
-            else:
-                video_frames_batch_padded = video_frames_batch
-
             # Processing faces in the batch
             print(f"Processing faces in batch {batch_count + 1}/{total_batches}")
             faces_batch, boxes_batch, affine_matrices_batch, face_detected_mask_batch = self.affine_transform_video_safe(
-                video_frames_batch_padded)
+                video_frames_batch)
 
             # Determining the number of groups by num_frames of frames for inference
-            num_inferences_batch = len(video_frames_batch_padded) // num_frames
+            num_inferences_batch = current_batch_size // num_frames
+            if current_batch_size % num_frames != 0:
+                # Adding another group for the remaining frames
+                num_inferences_batch += 1
 
             synced_video_frames_batch = []
 
             # Preparing latent variables for the entire batch
             all_latents = self.prepare_latents(
                 batch_size,
-                len(video_frames_batch_padded),
+                current_batch_size,
                 num_channels_latents,
                 height,
                 width,
@@ -679,25 +673,22 @@ class LipsyncPipeline(DiffusionPipeline):
                 del latents, mask_latents, masked_image_latents, ref_latents, decoded_latents
                 torch.cuda.empty_cache()
 
-            synced_video_frames_batch = synced_video_frames_batch[:len(video_frames_batch)]
-
             # Restoring the full video for the current batch
             restored_frames = []
             for i, frame in enumerate(synced_video_frames_batch):
-                if i < len(face_detected_mask_batch) and face_detected_mask_batch[i]:
+                if face_detected_mask_batch[i]:
                     restored_frame = self.restore_single_frame(
                         frame, video_frames_batch[i], boxes_batch[i], affine_matrices_batch[i]
                     )
                     restored_frames.append(restored_frame)
                 else:
-                    if i < len(video_frames_batch):
-                        restored_frames.append(video_frames_batch[i])
+                    restored_frames.append(video_frames_batch[i])
 
             batch_output_path = os.path.join(temp_dir, f"batch_{batch_count:04d}.mp4")
             write_video(batch_output_path, np.array(restored_frames), fps=video_fps)
             part_paths.append(batch_output_path)
 
-            del video_frames_batch, video_frames_batch_padded, faces_batch, boxes_batch, affine_matrices_batch
+            del video_frames_batch, faces_batch, boxes_batch, affine_matrices_batch
             del synced_video_frames_batch, restored_frames, all_latents
             gc.collect()
             torch.cuda.empty_cache()
@@ -706,7 +697,7 @@ class LipsyncPipeline(DiffusionPipeline):
             batch_progress.update(1)
 
             print(f"Debug: Completing batch {batch_count}, processed_frames was {processed_frames}")
-            processed_frames += len(video_frames_batch)
+            processed_frames += current_batch_size
             print(f"Debug: processed_frames now {processed_frames}")
 
         batch_progress.close()
