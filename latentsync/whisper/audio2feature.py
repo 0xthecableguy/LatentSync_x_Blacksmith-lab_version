@@ -86,7 +86,7 @@ class Audio2Feature:
         total_frames = len(feature_array) * fps / 50.0
         whisper_chunks = []
         whisper_idx_multiplier = 50.0 / fps
-        print(f"video in {fps} FPS, audio idx in 50FPS, total frames: {total_frames}")
+        print(f"video in {fps} FPS, initial audio idx in 50FPS, total frames: {total_frames}")
 
         for i in range(int(total_frames)):
             start_idx = int(i * whisper_idx_multiplier)

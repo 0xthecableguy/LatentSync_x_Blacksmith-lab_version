@@ -144,39 +144,39 @@ class ImageProcessor:
 
     def affine_transform_safe(self, image: torch.Tensor, allow_multi_faces: bool = True) -> np.ndarray:
         """
-        Безопасная версия метода affine_transform, которая не выбрасывает исключение,
-        если лицо не обнаружено
+        A safe version of the affine_transform method that does not throw an exception
+        if no face is detected.
 
         Args:
-            image: Исходное изображение
-            allow_multi_faces: Разрешить обработку нескольких лиц
+            image: Original image.
+            allow_multi_faces: Allow processing of multiple faces.
 
         Returns:
-            face: Обработанное изображение лица
-            box: Бокс лица
-            affine_matrix: Аффинная матрица преобразования
+            face: Processed face image.
+            box: Face bounding box.
+            affine_matrix: Affine transformation matrix.
         """
+
         try:
-            # Существующая логика обнаружения лиц
             if self.fa is None:
                 landmark_coordinates = np.array(self.detect_facial_landmarks(image))
                 lm68 = mediapipe_lm478_to_face_alignment_lm68(landmark_coordinates)
             else:
                 detected_faces = self.fa.get_landmarks(image)
                 if detected_faces is None:
-                    # Возвращаем исходный кадр и пометку, что лицо не найдено
+                    # Returning the original frame and mark that the face has not been found
                     face = cv2.resize(image.copy(), (self.resolution, self.resolution),
                                       interpolation=cv2.INTER_LANCZOS4)
                     face = rearrange(torch.from_numpy(face), "h w c -> c h w")
                     return face, None, None
 
                 if not allow_multi_faces and len(detected_faces) > 1:
-                    # Выбираем первое лицо (можно настроить логику выбора)
+                    # Choose the first person (customizable face selection logic)
                     lm68 = detected_faces[0]
                 else:
                     lm68 = detected_faces[0]
 
-            # Остальная логика обработки лица
+            # The rest of the face processing logic
             points = self.smoother.smooth(lm68)
             lmk3_ = np.zeros((3, 2))
             lmk3_[0] = points[17:22].mean(0)
@@ -192,7 +192,7 @@ class ImageProcessor:
             return face, box, affine_matrix
 
         except Exception as e:
-            # Возвращаем исходный кадр при любой ошибке
+            # Returning the original frame in case of any error
             print(f"Warning: Error in face detection/alignment: {e}")
             face = cv2.resize(image.copy(), (self.resolution, self.resolution), interpolation=cv2.INTER_LANCZOS4)
             face = rearrange(torch.from_numpy(face), "h w c -> c h w")
