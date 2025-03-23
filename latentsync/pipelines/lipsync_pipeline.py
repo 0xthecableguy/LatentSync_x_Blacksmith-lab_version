@@ -613,7 +613,9 @@ class LipsyncPipeline(DiffusionPipeline):
                     latents = all_latents[:, :, start_idx:end_idx]
 
                     # Padding latents
-                    padding_latents = latents[:, :, -1:].repeat(1, 1, padding_needed)
+                    last_frame_latent = latents[:, :, -1:]
+                    padding_latents = torch.cat([last_frame_latent] * padding_needed,
+                                                dim=2)
                     latents = torch.cat([latents, padding_latents], dim=2)
 
                     # Preparing masks and images with masks
