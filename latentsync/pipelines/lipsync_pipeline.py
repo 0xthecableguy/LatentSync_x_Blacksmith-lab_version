@@ -277,46 +277,37 @@ class LipsyncPipeline(DiffusionPipeline):
         faces = torch.stack(faces)
         return faces, boxes, affine_matrices, face_indices, face_detected_mask
 
-    def affine_transform_video_safe(self, video_frames: np.ndarray):
-        """
-        A safe version of the affine_transform_video method that correctly
-        handles frames without faces.
+    def affine_transform_video_safe(self, video_frames: np.ndarray, max_workers=8):
+        from concurrent.futures import ThreadPoolExecutor
 
-        Args:
-            video_frames: An array of video frames
-
-        Returns:
-            faces: A tensor of processed faces
-            boxes: A list of face bounding boxes
-            affine_matrices: A list of affine matrices
-            face_detected_mask: A face detection mask
-        """
-        faces = []
-        boxes = []
-        affine_matrices = []
-        face_detected_mask = []  # Mask for tracking frames with faces
-
-        print(f"Affine transforming {len(video_frames)} frames...")
-        for frame in tqdm.tqdm(video_frames):
+        def process_frame(frame):
             try:
                 face, box, affine_matrix = self.image_processor.affine_transform_safe(frame)
-                faces.append(face)
-                boxes.append(box)
-                affine_matrices.append(affine_matrix)
-                # True if the face is found (box and affine_matrix are not None)
-                face_detected_mask.append(box is not None and affine_matrix is not None)
+                is_face_detected = box is not None and affine_matrix is not None
+                return face, box, affine_matrix, is_face_detected
             except Exception as e:
                 print(f"Error during affine transform: {e}")
-                # In case of an error, add the original frame and mark that the face is not detected
                 resized_frame = cv2.resize(frame, (self.image_processor.resolution, self.image_processor.resolution),
                                            interpolation=cv2.INTER_LANCZOS4)
                 face_tensor = torch.from_numpy(resized_frame).permute(2, 0, 1)
-                faces.append(face_tensor)
-                boxes.append(None)
-                affine_matrices.append(None)
-                face_detected_mask.append(False)
+                return face_tensor, None, None, False
 
-        # Convert the list of faces into a tensor
+        print(f"Affine transforming {len(video_frames)} frames using {max_workers} threads...")
+        faces = []
+        boxes = []
+        affine_matrices = []
+        face_detected_mask = []
+
+        # Используем map для сохранения порядка
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = list(tqdm.tqdm(executor.map(process_frame, video_frames), total=len(video_frames)))
+
+        for face, box, affine_matrix, is_face_detected in results:
+            faces.append(face)
+            boxes.append(box)
+            affine_matrices.append(affine_matrix)
+            face_detected_mask.append(is_face_detected)
+
         faces = torch.stack(faces)
         face_detected_mask = np.array(face_detected_mask)
 
