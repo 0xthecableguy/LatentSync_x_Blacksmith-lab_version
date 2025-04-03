@@ -161,6 +161,34 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
 #     out.release()
 
 
+# def write_video(batch_output_path, frames, fps=25):
+#     """
+#     Saves frames to a video file with maximum quality.
+#
+#     Args:
+#         batch_output_path: Path to save the video file.
+#         frames: Array of frames to write.
+#         fps: Frame rate.
+#     """
+#     height, width = frames[0].shape[:2]
+#
+#     temp_dir = os.path.dirname(batch_output_path)
+#     temp_frames_dir = os.path.join(temp_dir, f"temp_frames_{os.path.basename(batch_output_path).split('.')[0]}")
+#     os.makedirs(temp_frames_dir, exist_ok=True)
+#
+#     for i, frame in enumerate(frames):
+#         frame_path = os.path.join(temp_frames_dir, f"frame_{i:04d}.png")
+#         cv2.imwrite(frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+#
+#     frames_pattern = os.path.join(temp_frames_dir, "frame_%04d.png")
+#     command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
+#     subprocess.run(command, shell=True)
+#
+#     shutil.rmtree(temp_frames_dir)
+#
+#     return batch_output_path
+
+
 def write_video(batch_output_path, frames, fps=25):
     """
     Saves frames to a video file with maximum quality.
@@ -170,24 +198,35 @@ def write_video(batch_output_path, frames, fps=25):
         frames: Array of frames to write.
         fps: Frame rate.
     """
+    import concurrent.futures
+    import os
+    import cv2
+    import subprocess
+    import shutil
+
     height, width = frames[0].shape[:2]
 
     temp_dir = os.path.dirname(batch_output_path)
     temp_frames_dir = os.path.join(temp_dir, f"temp_frames_{os.path.basename(batch_output_path).split('.')[0]}")
     os.makedirs(temp_frames_dir, exist_ok=True)
 
-    for i, frame in enumerate(frames):
-        frame_path = os.path.join(temp_frames_dir, f"frame_{i:04d}.png")
-        cv2.imwrite(frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+    # Функция для сохранения одного кадра
+    def save_frame(args):
+        i, frame, save_dir = args
+        frame_path = os.path.join(save_dir, f"frame_{i:04d}.png")
+        cv2.imwrite(frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_PNG_COMPRESSION, 1])
+        return frame_path
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        executor.map(save_frame, [(i, frame, temp_frames_dir) for i, frame in enumerate(frames)])
 
     frames_pattern = os.path.join(temp_frames_dir, "frame_%04d.png")
-    command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
+    command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset medium -pix_fmt yuv444p {batch_output_path}"
     subprocess.run(command, shell=True)
 
     shutil.rmtree(temp_frames_dir)
 
     return batch_output_path
-
 
 def init_dist(backend="nccl", **kwargs):
     """Initializes distributed environment."""
