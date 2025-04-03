@@ -37,7 +37,7 @@ def load_fixed_mask(resolution: int, mask_image_path="latentsync/utils/mask.png"
 
 
 class ImageProcessor:
-    def __init__(self, resolution: int = 512, mask: str = "fix_mask", device: str = "cpu", mask_image=None):
+    def __init__(self, resolution: int = 1024, mask: str = "fix_mask", device: str = "cpu", mask_image=None):
         self.resolution = resolution
         self.resize = transforms.Resize(
             (resolution, resolution), interpolation=transforms.InterpolationMode.BILINEAR, antialias=True
