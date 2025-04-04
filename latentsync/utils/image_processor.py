@@ -28,7 +28,7 @@ https://stackoverflow.com/questions/23853632/which-kind-of-interpolation-best-fo
 """
 
 
-def load_fixed_mask(resolution: int, mask_image_path="latentsync/utils/mask.png") -> torch.Tensor:
+def load_fixed_mask(resolution: int, mask_image_path="latentsync/utils/mask_hd.png") -> torch.Tensor:
     mask_image = cv2.imread(mask_image_path)
     mask_image = cv2.cvtColor(mask_image, cv2.COLOR_BGR2RGB)
     mask_image = cv2.resize(mask_image, (resolution, resolution), interpolation=cv2.INTER_LANCZOS4) / 255.0
@@ -37,7 +37,7 @@ def load_fixed_mask(resolution: int, mask_image_path="latentsync/utils/mask.png"
 
 
 class ImageProcessor:
-    def __init__(self, resolution: int = 1024, mask: str = "fix_mask", device: str = "cpu", mask_image=None):
+    def __init__(self, resolution: int = 512, mask: str = "fix_mask", device: str = "cpu", mask_image=None):
         self.resolution = resolution
         self.resize = transforms.Resize(
             (resolution, resolution), interpolation=transforms.InterpolationMode.BILINEAR, antialias=True

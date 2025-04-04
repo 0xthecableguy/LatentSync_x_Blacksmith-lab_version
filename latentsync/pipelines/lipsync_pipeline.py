@@ -402,7 +402,7 @@ class LipsyncPipeline(DiffusionPipeline):
         weight_dtype: Optional[torch.dtype] = torch.float16,
         eta: float = 0.0,
         mask: str = "fix_mask",
-        mask_image_path: str = "latentsync/utils/mask.png",
+        mask_image_path: str = "latentsync/utils/mask_hd.png",
         batch_size: int = 1,
         max_batch_frames: int = 256,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
