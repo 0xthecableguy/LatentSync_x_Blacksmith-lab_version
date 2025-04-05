@@ -4,6 +4,7 @@ import inspect
 import math
 import os
 import shutil
+import uuid
 from typing import Callable, List, Optional, Union
 import subprocess
 
@@ -391,7 +392,7 @@ class LipsyncPipeline(DiffusionPipeline):
         audio_path: str,
         video_out_path: str,
         video_mask_path: str = None,
-        num_frames: int = 16,
+        num_frames: int = 64,
         video_fps: int = 25,
         audio_sample_rate: int = 16000,
         height: Optional[int] = None,
@@ -403,7 +404,7 @@ class LipsyncPipeline(DiffusionPipeline):
         mask: str = "fix_mask",
         mask_image_path: str = "latentsync/utils/mask.png",
         batch_size: int = 1,
-        max_batch_frames: int = 64,
+        max_batch_frames: int = 256,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: Optional[int] = 1,
@@ -446,8 +447,10 @@ class LipsyncPipeline(DiffusionPipeline):
         print(f"Audio chunks created for {video_fps} FPS")
         audio_samples = read_audio(audio_path)
 
+        run_id = str(uuid.uuid4())[:8]
+
         # Converting video to 25 FPS first
-        temp_fps_dir = "temp_fps_conversion"
+        temp_fps_dir = f"temp_fps_conversion_{run_id}"
         if os.path.exists(temp_fps_dir):
             shutil.rmtree(temp_fps_dir)
         os.makedirs(temp_fps_dir, exist_ok=True)
@@ -467,7 +470,7 @@ class LipsyncPipeline(DiffusionPipeline):
         cap.release()
 
         # Creating a temporary directory
-        temp_dir = "temp_processing"
+        temp_dir = f"temp_processing_{run_id}"
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
         os.makedirs(temp_dir, exist_ok=True)

@@ -162,14 +162,6 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
 
 
 def write_video(batch_output_path, frames, fps=25):
-    """
-    Saves frames to a video file with maximum quality.
-
-    Args:
-        batch_output_path: Path to save the video file.
-        frames: Array of frames to write.
-        fps: Frame rate.
-    """
     height, width = frames[0].shape[:2]
 
     temp_dir = os.path.dirname(batch_output_path)
