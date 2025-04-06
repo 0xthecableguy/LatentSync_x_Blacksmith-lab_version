@@ -1,8 +1,8 @@
 #!/bin/bash
 
-NUM_FOLDERS=3
+NUM_FOLDERS=11
 
-MAX_PROCESSES=2
+MAX_PROCESSES=3
 
 LOG_FILE="processing_log.txt"
 echo "Processing started at $(date)" > $LOG_FILE
@@ -26,7 +26,7 @@ for i in $(seq 1 $NUM_FOLDERS); do
         --unet_config_path "configs/unet/stage2.yaml" \
         --inference_ckpt_path "checkpoints/latentsync_unet.pt" \
         --inference_steps 50 \
-        --guidance_scale 1.7 \
+        --guidance_scale 1.6 \
         --video_path "assets/$i/$i.mp4" \
         --audio_path "assets/$i/en_audio.mp3" \
         --video_out_path "output/$i/video_out.mp4" > "output/$i/process.log" 2>&1 &
