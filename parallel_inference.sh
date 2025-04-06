@@ -11,7 +11,7 @@ declare -A pid_folder
 
 for i in $(seq 1 $NUM_FOLDERS); do
   if [ -d "assets/$i" ]; then
-    if [ -f "assets/$i/$i.mp4" ] && [ -f "assets/$i/output_stereo.mp3" ]; then
+    if [ -f "assets/$i/$i.mp4" ] && [ -f "assets/$i/en_audio.mp3" ]; then
       echo "Queueing folder assets/$i"
 
       mkdir -p "output/$i"
@@ -28,7 +28,7 @@ for i in $(seq 1 $NUM_FOLDERS); do
         --inference_steps 50 \
         --guidance_scale 1.6 \
         --video_path "assets/$i/$i.mp4" \
-        --audio_path "assets/$i/output_stereo.mp3" \
+        --audio_path "assets/$i/en_audio.mp3" \
         --video_out_path "output/$i/video_out.mp4" > "output/$i/process.log" 2>&1 &
 
       pid=$!
@@ -74,7 +74,7 @@ echo -e "\nProcessing summary:" | tee -a $LOG_FILE
 for i in $(seq 1 $NUM_FOLDERS); do
   if [ -f "output/$i/video_out.mp4" ] && [ -s "output/$i/video_out.mp4" ]; then
     echo "Folder $i: SUCCESS" | tee -a $LOG_FILE
-  elif [ -d "assets/$i" ] && [ -f "assets/$i/$i.mp4" ] && [ -f "assets/$i/output_stereo.mp3" ]; then
+  elif [ -d "assets/$i" ] && [ -f "assets/$i/$i.mp4" ] && [ -f "assets/$i/en_audio.mp3" ]; then
     echo "Folder $i: FAILED" | tee -a $LOG_FILE
   else
     echo "Folder $i: SKIPPED (files missing)" | tee -a $LOG_FILE
