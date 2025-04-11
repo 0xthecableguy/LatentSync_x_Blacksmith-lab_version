@@ -306,7 +306,7 @@ class LipsyncPipeline(DiffusionPipeline):
 
         # Используем ThreadPoolExecutor для параллельной обработки
         # Ограничиваем количество рабочих потоков для избежания перегрузки системы
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             results = list(tqdm.tqdm(executor.map(process_single_frame, video_frames), total=len(video_frames)))
 
         # Распаковываем результаты
