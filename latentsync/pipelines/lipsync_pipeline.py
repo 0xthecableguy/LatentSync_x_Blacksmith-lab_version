@@ -140,10 +140,20 @@ class LipsyncPipeline(DiffusionPipeline):
                 return torch.device(module._hf_hook.execution_device)
         return self.device
 
-    def decode_latents(self, latents):
+    def decode_latents(self, latents, batch_size=8):
         latents = latents / self.vae.config.scaling_factor + self.vae.config.shift_factor
         latents = rearrange(latents, "b c f h w -> (b f) c h w")
-        decoded_latents = self.vae.decode(latents).sample
+
+        total_frames = latents.shape[0]
+        decoded_chunks = []
+
+        for i in range(0, total_frames, batch_size):
+            end_idx = min(i + batch_size, total_frames)
+            chunk = latents[i:end_idx]
+            decoded_chunk = self.vae.decode(chunk).sample
+            decoded_chunks.append(decoded_chunk)
+
+        decoded_latents = torch.cat(decoded_chunks, dim=0)
         return decoded_latents
 
     def prepare_extra_step_kwargs(self, generator, eta):
@@ -413,6 +423,9 @@ class LipsyncPipeline(DiffusionPipeline):
         is_train = self.denoising_unet.training
         self.denoising_unet.eval()
 
+        if hasattr(torch, 'compile'):
+            self.denoising_unet = torch.compile(self.denoising_unet, mode="reduce-overhead")
+
         check_ffmpeg_installed()
 
         # 0. Define call parameters
@@ -676,7 +689,7 @@ class LipsyncPipeline(DiffusionPipeline):
                                     callback(j, t, latents)
 
                     # Decoding latent variables into images
-                    decoded_latents = self.decode_latents(latents)
+                    decoded_latents = self.decode_latents(latents, batch_size=16)
 
                     # Inserting the surrounding pixels back in
                     decoded_latents = self.paste_surrounding_pixels_back(
@@ -787,7 +800,7 @@ class LipsyncPipeline(DiffusionPipeline):
                                 callback(j, t, latents)
 
                 # Decoding latent variables into images
-                decoded_latents = self.decode_latents(latents)
+                decoded_latents = self.decode_latents(latents, batch_size=16)
 
                 # Inserting the surrounding pixels back in
                 decoded_latents = self.paste_surrounding_pixels_back(
