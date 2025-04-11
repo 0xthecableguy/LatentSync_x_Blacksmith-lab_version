@@ -524,6 +524,7 @@ class LipsyncPipeline(DiffusionPipeline):
 
             synced_video_frames_batch = []
 
+            start_time = time.time()
             # Preparing latent variables for the entire batch
             all_latents = self.prepare_latents(
                 batch_size,
@@ -535,6 +536,8 @@ class LipsyncPipeline(DiffusionPipeline):
                 device,
                 generator,
             )
+            print(f"prepare_latents took {time.time() - start_time:.2f} seconds")
+
 
             #8. Processing each group of frames in the batch
             for i in range(num_inferences_batch):
@@ -608,11 +611,14 @@ class LipsyncPipeline(DiffusionPipeline):
                                                 dim=2)
                     latents = torch.cat([latents, padding_latents], dim=2)
 
+                    start_time = time.time()
                     # Preparing masks and images with masks
                     ref_pixel_values, masked_pixel_values, masks = self.image_processor.prepare_masks_and_masked_images(
                         current_faces, affine_transform=False
                     )
+                    print(f"prepare_masks_and_masked_images took {time.time() - start_time:.2f} seconds")
 
+                    start_time = time.time()
                     # Preparing latent variables for masks
                     mask_latents, masked_image_latents = self.prepare_mask_latents(
                         masks,
@@ -624,7 +630,9 @@ class LipsyncPipeline(DiffusionPipeline):
                         generator,
                         do_classifier_free_guidance,
                     )
+                    print(f"prepare_mask_latents took {time.time() - start_time:.2f} seconds")
 
+                    start_time = time.time()
                     # Preparing latent variables for images
                     ref_latents = self.prepare_image_latents(
                         ref_pixel_values,
@@ -633,7 +641,9 @@ class LipsyncPipeline(DiffusionPipeline):
                         generator,
                         do_classifier_free_guidance,
                     )
+                    print(f"prepare_image_latents took {time.time() - start_time:.2f} seconds")
 
+                    start_time = time.time()
                     # The denoising cycle
                     num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
                     with self.progress_bar(total=num_inference_steps) as progress_bar:
@@ -661,14 +671,19 @@ class LipsyncPipeline(DiffusionPipeline):
                                 progress_bar.update()
                                 if callback is not None and j % callback_steps == 0:
                                     callback(j, t, latents)
+                    print(f"denoising cycle took {time.time() - start_time:.2f} seconds")
 
+                    start_time = time.time()
                     # Decoding latent variables into images
                     decoded_latents = self.decode_latents(latents)
+                    print(f"decode_latents took {time.time() - start_time:.2f} seconds")
 
+                    start_time = time.time()
                     # Inserting the surrounding pixels back in
                     decoded_latents = self.paste_surrounding_pixels_back(
                         decoded_latents, ref_pixel_values, 1 - masks, device, weight_dtype
                     )
+                    print(f"paste_surrounding_pixels_back took {time.time() - start_time:.2f} seconds")
 
                     # Take only the original frames (discard padded results)
                     original_count = end_idx - start_idx
@@ -799,6 +814,7 @@ class LipsyncPipeline(DiffusionPipeline):
                 del latents, mask_latents, masked_image_latents, ref_latents, decoded_latents
                 torch.cuda.empty_cache()
 
+            start_time = time.time()
             # Restoring the full video for the current batch
             restored_frames = []
             for i, frame in enumerate(synced_video_frames_batch):
@@ -809,9 +825,13 @@ class LipsyncPipeline(DiffusionPipeline):
                     restored_frames.append(restored_frame)
                 else:
                     restored_frames.append(video_frames_batch[i])
+            print(f"restore_frames loop took {time.time() - start_time:.2f} seconds")
 
             batch_output_path = os.path.join(temp_dir, f"batch_{batch_count:04d}.mp4")
+            start_time = time.time()
             write_video(batch_output_path, np.array(restored_frames), fps=video_fps)
+            print(f"write_video took {time.time() - start_time:.2f} seconds")
+
             part_paths.append(batch_output_path)
 
             del video_frames_batch, faces_batch, boxes_batch, affine_matrices_batch
