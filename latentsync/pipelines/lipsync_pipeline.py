@@ -39,6 +39,8 @@ from ..whisper.audio2feature import Audio2Feature
 import tqdm
 import soundfile as sf
 
+from diffusers import DPMSolverMultistepScheduler
+
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
 
@@ -397,6 +399,14 @@ class LipsyncPipeline(DiffusionPipeline):
         is_train = self.denoising_unet.training
         self.denoising_unet.eval()
 
+        if hasattr(torch, 'compile'):
+            print("Compiling UNet for faster inference...")
+            self.denoising_unet = torch.compile(
+                self.denoising_unet,
+                mode="reduce-overhead",
+                fullgraph=False
+            )
+
         check_ffmpeg_installed()
 
         # 0. Define call parameters
@@ -418,6 +428,8 @@ class LipsyncPipeline(DiffusionPipeline):
         do_classifier_free_guidance = guidance_scale > 1.0
 
         # 3. set timesteps
+        old_config = self.scheduler.config
+        self.scheduler = DPMSolverMultistepScheduler.from_config(old_config)
         self.scheduler.set_timesteps(num_inference_steps, device=device)
         timesteps = self.scheduler.timesteps
 
