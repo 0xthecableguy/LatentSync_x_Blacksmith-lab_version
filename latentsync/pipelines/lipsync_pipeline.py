@@ -140,10 +140,20 @@ class LipsyncPipeline(DiffusionPipeline):
                 return torch.device(module._hf_hook.execution_device)
         return self.device
 
-    def decode_latents(self, latents):
+    def decode_latents(self, latents, batch_size=8):
         latents = latents / self.vae.config.scaling_factor + self.vae.config.shift_factor
         latents = rearrange(latents, "b c f h w -> (b f) c h w")
-        decoded_latents = self.vae.decode(latents).sample
+
+        total_frames = latents.shape[0]
+        decoded_chunks = []
+
+        for i in range(0, total_frames, batch_size):
+            end_idx = min(i + batch_size, total_frames)
+            chunk = latents[i:end_idx]
+            decoded_chunk = self.vae.decode(chunk).sample
+            decoded_chunks.append(decoded_chunk)
+
+        decoded_latents = torch.cat(decoded_chunks, dim=0)
         return decoded_latents
 
     def prepare_extra_step_kwargs(self, generator, eta):
@@ -392,7 +402,7 @@ class LipsyncPipeline(DiffusionPipeline):
         audio_path: str,
         video_out_path: str,
         video_mask_path: str = None,
-        num_frames: int = 64,
+        num_frames: int = 128,
         video_fps: int = 25,
         audio_sample_rate: int = 16000,
         height: Optional[int] = None,
@@ -404,7 +414,7 @@ class LipsyncPipeline(DiffusionPipeline):
         mask: str = "fix_mask",
         mask_image_path: str = "latentsync/utils/mask.png",
         batch_size: int = 1,
-        max_batch_frames: int = 256,
+        max_batch_frames: int = 512,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         callback: Optional[Callable[[int, int, torch.FloatTensor], None]] = None,
         callback_steps: Optional[int] = 1,
@@ -456,7 +466,7 @@ class LipsyncPipeline(DiffusionPipeline):
         os.makedirs(temp_fps_dir, exist_ok=True)
 
         temp_video_path = os.path.join(temp_fps_dir, "video_25fps.mp4")
-        command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset medium -pix_fmt yuv444p {temp_video_path}"
+        command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -an -r 25 -c:v libx264 -preset fast -crf 18 -pix_fmt yuv444p {temp_video_path}"
         print(f"Converting video to 25 FPS: {command}")
         subprocess.run(command, shell=True)
 
