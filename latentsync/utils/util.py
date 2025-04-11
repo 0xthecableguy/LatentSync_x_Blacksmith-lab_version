@@ -162,35 +162,35 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
 
 
 def write_video(batch_output_path, frames, fps=25):
-    import concurrent.futures
-
-    print("1")
+    import subprocess
 
     height, width = frames[0].shape[:2]
+    command = [
+        'ffmpeg',
+        '-y',
+        '-loglevel', 'error',
+        '-f', 'rawvideo',
+        '-vcodec', 'rawvideo',
+        '-s', f'{width}x{height}',
+        '-pix_fmt', 'rgb24',
+        '-r', str(fps),
+        '-i', '-',
+        '-c:v', 'libx264',
+        '-crf', '0',
+        '-preset', 'medium',
+        '-pix_fmt', 'yuv444p',
+        '-tune', 'film',
+        '-threads', '0',
+        batch_output_path
+    ]
 
-    temp_dir = os.path.dirname(batch_output_path)
-    temp_frames_dir = os.path.join(temp_dir, f"temp_frames_{os.path.basename(batch_output_path).split('.')[0]}")
-    os.makedirs(temp_frames_dir, exist_ok=True)
+    process = subprocess.Popen(command, stdin=subprocess.PIPE)
 
-    # Функция для сохранения одного кадра
-    def save_frame(args):
-        i, frame, save_dir = args
-        frame_path = os.path.join(save_dir, f"frame_{i:04d}.png")
-        cv2.imwrite(frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_PNG_COMPRESSION, 1])
-        return frame_path
+    for frame in frames:
+        process.stdin.write(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB).tobytes())
 
-    # Многопоточное сохранение кадров
-    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
-        executor.map(save_frame, [(i, frame, temp_frames_dir) for i, frame in enumerate(frames)])
-
-    frames_pattern = os.path.join(temp_frames_dir, "frame_%04d.png")
-    # Используем более быстрый preset и многопоточность в ffmpeg
-    command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset medium -pix_fmt yuv444p -tune film -threads 0 {batch_output_path}"
-    subprocess.run(command, shell=True)
-
-    shutil.rmtree(temp_frames_dir)
-
-    print("2")
+    process.stdin.close()
+    process.wait()
 
     return batch_output_path
 
