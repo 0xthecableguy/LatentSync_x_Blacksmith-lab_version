@@ -164,6 +164,8 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
 def write_video(batch_output_path, frames, fps=25):
     import concurrent.futures
 
+    print("1")
+
     height, width = frames[0].shape[:2]
 
     temp_dir = os.path.dirname(batch_output_path)
@@ -187,6 +189,8 @@ def write_video(batch_output_path, frames, fps=25):
     subprocess.run(command, shell=True)
 
     shutil.rmtree(temp_frames_dir)
+
+    print("2")
 
     return batch_output_path
 
