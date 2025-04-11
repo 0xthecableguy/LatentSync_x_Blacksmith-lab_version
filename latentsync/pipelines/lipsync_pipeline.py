@@ -4,6 +4,7 @@ import inspect
 import math
 import os
 import shutil
+import time
 import uuid
 from typing import Callable, List, Optional, Union
 import subprocess
@@ -283,7 +284,9 @@ class LipsyncPipeline(DiffusionPipeline):
 
         def process_single_frame(frame):
             try:
+                start_time = time.time()
                 face, box, affine_matrix = self.image_processor.affine_transform_safe(frame)
+                print(f"Operation X took {time.time() - start_time:.2f} seconds")
                 return face, box, affine_matrix, (box is not None and affine_matrix is not None)
             except Exception as e:
                 print(f"Error during affine transform: {e}")
@@ -507,8 +510,11 @@ class LipsyncPipeline(DiffusionPipeline):
 
             # Processing faces in the batch
             print(f"Processing faces in batch {batch_count + 1}/{total_batches}")
+            start_time = time.time()
             faces_batch, boxes_batch, affine_matrices_batch, face_detected_mask_batch = self.affine_transform_video_safe(
                 video_frames_batch)
+            print(f"affine_transform_video_safe took {time.time() - start_time:.2f} seconds")
+
 
             # Determining the number of groups by num_frames of frames for inference
             num_inferences_batch = current_batch_size // num_frames
