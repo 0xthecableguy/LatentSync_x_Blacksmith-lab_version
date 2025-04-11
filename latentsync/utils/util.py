@@ -138,7 +138,7 @@ def combine_video_parts(part_paths: list, output_path: str):
     if os.path.exists(list_file):
         os.remove(list_file)
 
-def read_audio(audio_path: str, audio_sample_rate: int = 16000):
+def read_audio(audio_path: str, audio_sample_rate: int = 48000):
     if audio_path is None:
         raise ValueError("Audio path is required.")
     ar = AudioReader(audio_path, sample_rate=audio_sample_rate, mono=True)
@@ -173,7 +173,7 @@ def write_video(batch_output_path, frames, fps=25):
         cv2.imwrite(frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
 
     frames_pattern = os.path.join(temp_frames_dir, "frame_%04d.png")
-    command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
+    command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset medium -pix_fmt yuv444p {batch_output_path}"
     subprocess.run(command, shell=True)
 
     shutil.rmtree(temp_frames_dir)
