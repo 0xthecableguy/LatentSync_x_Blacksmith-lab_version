@@ -466,7 +466,7 @@ class LipsyncPipeline(DiffusionPipeline):
         os.makedirs(temp_fps_dir, exist_ok=True)
 
         temp_video_path = os.path.join(temp_fps_dir, "video_25fps.mp4")
-        command = f"ffmpeg -loglevel error -y -nostdin -hwaccel cuda -i {video_path} -an -r 25 -c:v h264_nvenc -preset p7 -qp 15 -pix_fmt yuv444p {temp_video_path}"
+        command = f"ffmpeg -loglevel error -y -nostdin -threads 0 -i {video_path} -an -r 25 -c:v libx264 -preset fast -tune film -crf 15 -pix_fmt yuv444p -x264opts aq-mode=3:no-dct-decimate=1 {temp_video_path}"
         print(f"Converting video to 25 FPS: {command}")
         subprocess.run(command, shell=True)
 
