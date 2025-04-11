@@ -538,7 +538,7 @@ class LipsyncPipeline(DiffusionPipeline):
             )
             print(f"prepare_latents took {time.time() - start_time:.2f} seconds")
 
-
+            start_time = time.time()
             #8. Processing each group of frames in the batch
             for i in range(num_inferences_batch):
                 start_idx = i * num_frames
@@ -813,6 +813,7 @@ class LipsyncPipeline(DiffusionPipeline):
                 # Clearing the memory after processing the group
                 del latents, mask_latents, masked_image_latents, ref_latents, decoded_latents
                 torch.cuda.empty_cache()
+            print(f"processing each group took {time.time() - start_time:.2f} seconds")
 
             start_time = time.time()
             # Restoring the full video for the current batch
