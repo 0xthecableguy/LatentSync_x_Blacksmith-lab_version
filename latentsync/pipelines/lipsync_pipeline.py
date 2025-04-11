@@ -456,7 +456,7 @@ class LipsyncPipeline(DiffusionPipeline):
         os.makedirs(temp_fps_dir, exist_ok=True)
 
         temp_video_path = os.path.join(temp_fps_dir, "video_25fps.mp4")
-        command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p {temp_video_path}"
+        command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset medium -pix_fmt yuv444p {temp_video_path}"
         print(f"Converting video to 25 FPS: {command}")
         subprocess.run(command, shell=True)
 
@@ -496,6 +496,8 @@ class LipsyncPipeline(DiffusionPipeline):
         total_batches = math.ceil(total_frames / batch_frames)
         batch_progress = tqdm.tqdm(total=total_batches, desc="Processing video batches")
 
+        print("1")
+
         #7. Video processing in parts
         while processed_frames < total_frames:
             # Clearing CUDA memory before processing a new batch
@@ -529,6 +531,8 @@ class LipsyncPipeline(DiffusionPipeline):
             faces_batch, boxes_batch, affine_matrices_batch, face_detected_mask_batch = self.affine_transform_video_safe(
                 video_frames_batch)
 
+            print("2")
+
             # Determining the number of groups by num_frames of frames for inference
             num_inferences_batch = current_batch_size // num_frames
             if current_batch_size % num_frames != 0:
@@ -548,6 +552,8 @@ class LipsyncPipeline(DiffusionPipeline):
                 device,
                 generator,
             )
+
+            print("3")
 
             #8. Processing each group of frames in the batch
             for i in range(num_inferences_batch):
@@ -626,6 +632,8 @@ class LipsyncPipeline(DiffusionPipeline):
                         current_faces, affine_transform=False
                     )
 
+                    print("4")
+
                     # Preparing latent variables for masks
                     mask_latents, masked_image_latents = self.prepare_mask_latents(
                         masks,
@@ -646,6 +654,8 @@ class LipsyncPipeline(DiffusionPipeline):
                         generator,
                         do_classifier_free_guidance,
                     )
+
+                    print("5")
 
                     # The denoising cycle
                     num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
@@ -675,8 +685,12 @@ class LipsyncPipeline(DiffusionPipeline):
                                 if callback is not None and j % callback_steps == 0:
                                     callback(j, t, latents)
 
+                    print("6")
+
                     # Decoding latent variables into images
                     decoded_latents = self.decode_latents(latents)
+
+                    print("7")
 
                     # Inserting the surrounding pixels back in
                     decoded_latents = self.paste_surrounding_pixels_back(
@@ -822,6 +836,8 @@ class LipsyncPipeline(DiffusionPipeline):
                     restored_frames.append(restored_frame)
                 else:
                     restored_frames.append(video_frames_batch[i])
+
+            print("7")
 
             batch_output_path = os.path.join(temp_dir, f"batch_{batch_count:04d}.mp4")
             write_video(batch_output_path, np.array(restored_frames), fps=video_fps)
