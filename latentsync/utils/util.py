@@ -160,7 +160,7 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
 #         out.write(frame)
 #     out.release()
 
-# # Best quality with parallel processing
+# Best quality with parallel processing
 def write_video(batch_output_path, frames, fps=25):
     height, width = frames[0].shape[:2]
 
