@@ -327,32 +327,44 @@ class LipsyncPipeline(DiffusionPipeline):
 
     def process_frames_parallel(self, synced_frames, original_frames, boxes, affine_matrices, face_masks,
                                 max_workers=4):
-        results = [None] * len(synced_frames)
+        """
+        Безопасная параллельная обработка кадров.
+        """
+        num_frames = len(synced_frames)
+        results = [None] * num_frames
 
-        # Быстрая обработка кадров без лиц
-        for i, has_face in enumerate(face_masks):
-            if not has_face:
-                results[i] = original_frames[i]
+        # Явно разделяем кадры с лицами и без
+        face_indices = []
+        no_face_indices = []
 
-        # Обработка кадров с лицами параллельно
-        face_indices = [i for i, has_face in enumerate(face_masks) if has_face]
+        for i in range(num_frames):
+            if face_masks[i] and boxes[i] is not None and affine_matrices[i] is not None:
+                face_indices.append(i)
+            else:
+                no_face_indices.append(i)
+                results[i] = original_frames[i]  # Сразу копируем кадры без лиц
 
+        # Если нет кадров с лицами, возвращаем результат
         if not face_indices:
             return results
 
+        # Используем ThreadPoolExecutor для параллельной обработки
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(
+            # Создаем задачи для обработки каждого кадра с лицом
+            future_to_index = {}
+            for i in face_indices:
+                future = executor.submit(
                     self.restore_single_frame,
                     synced_frames[i],
                     original_frames[i],
                     boxes[i],
                     affine_matrices[i]
-                ): i for i in face_indices
-            }
+                )
+                future_to_index[future] = i
 
-            for future in concurrent.futures.as_completed(futures):
-                idx = futures[future]
+            # Обрабатываем результаты по мере их завершения
+            for future in concurrent.futures.as_completed(future_to_index):
+                idx = future_to_index[future]
                 try:
                     results[idx] = future.result()
                 except Exception as e:
