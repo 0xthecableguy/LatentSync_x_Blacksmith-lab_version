@@ -327,13 +327,9 @@ class LipsyncPipeline(DiffusionPipeline):
 
     def process_frames_parallel(self, synced_frames, original_frames, boxes, affine_matrices, face_masks,
                                 max_workers=4):
-        """
-        Безопасная параллельная обработка кадров.
-        """
         num_frames = len(synced_frames)
         results = [None] * num_frames
 
-        # Явно разделяем кадры с лицами и без
         face_indices = []
         no_face_indices = []
 
@@ -342,15 +338,12 @@ class LipsyncPipeline(DiffusionPipeline):
                 face_indices.append(i)
             else:
                 no_face_indices.append(i)
-                results[i] = original_frames[i]  # Сразу копируем кадры без лиц
+                results[i] = original_frames[i]
 
-        # Если нет кадров с лицами, возвращаем результат
         if not face_indices:
             return results
 
-        # Используем ThreadPoolExecutor для параллельной обработки
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Создаем задачи для обработки каждого кадра с лицом
             future_to_index = {}
             for i in face_indices:
                 future = executor.submit(
@@ -362,18 +355,30 @@ class LipsyncPipeline(DiffusionPipeline):
                 )
                 future_to_index[future] = i
 
-            # Обрабатываем результаты по мере их завершения
             for future in concurrent.futures.as_completed(future_to_index):
                 idx = future_to_index[future]
                 try:
                     results[idx] = future.result()
                 except Exception as e:
-                    print(f"Ошибка при обработке кадра {idx}: {e}")
+                    print(f"Error processing frame {idx}: {e}")
                     results[idx] = original_frames[idx]
 
         return results
 
     def restore_single_frame(self, processed_frame, original_frame, box, affine_matrix):
+        """
+        Restores the processed frame to its original dimensions.
+
+        Args:
+            processed_frame: Processed frame (tensor).
+            original_frame: Original frame.
+            box: Face bounding box.
+            affine_matrix: Affine transformation matrix.
+
+        Returns:
+            np.ndarray: Restored frame.
+        """
+        # If the face was not detected, we return the original frame
         if box is None or affine_matrix is None:
             return original_frame
 
@@ -799,7 +804,6 @@ class LipsyncPipeline(DiffusionPipeline):
                     do_classifier_free_guidance,
                 )
 
-                start_time = time.time()
                 # The denoising cycle
                 num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
                 with self.progress_bar(total=num_inference_steps) as progress_bar:
@@ -828,27 +832,17 @@ class LipsyncPipeline(DiffusionPipeline):
                             if callback is not None and j % callback_steps == 0:
                                 callback(j, t, latents)
 
-                elapsed_time = time.time() - start_time
-                print(f"Операция 'denoising cycle' заняла {elapsed_time:.2f} секунд")
-
-                start_time = time.time()
                 # Decoding latent variables into images
                 decoded_latents = self.decode_latents(latents)
-                elapsed_time = time.time() - start_time
-                print(f"Операция 'decode_latents' заняла {elapsed_time:.2f} секунд")
 
-                start_time = time.time()
                 # Inserting the surrounding pixels back in
                 decoded_latents = self.paste_surrounding_pixels_back(
                     decoded_latents, ref_pixel_values, 1 - masks, device, weight_dtype
                 )
-                elapsed_time = time.time() - start_time
-                print(f"Операция 'paste_surrounding_pixels_back' заняла {elapsed_time:.2f} секунд")
 
                 # Adding processed frames to the result
                 current_faces_detected = face_detected_mask_batch[start_idx:end_idx]
 
-                start_time = time.time()
                 # Processing the results for each frame
                 for k, is_face_detected in enumerate(current_faces_detected):
                     if k < len(decoded_latents):
@@ -859,8 +853,6 @@ class LipsyncPipeline(DiffusionPipeline):
                             # If the face is not detected, we use the original frame
                             orig_frame = torch.from_numpy(video_frames_batch[start_idx + k]).permute(2, 0, 1)
                             synced_video_frames_batch.append(orig_frame)
-                elapsed_time = time.time() - start_time
-                print(f"Операция 'Processing the results for each frame, line817' заняла {elapsed_time:.2f} секунд")
 
                 # Clearing the memory after processing the group
                 del latents, mask_latents, masked_image_latents, ref_latents, decoded_latents
@@ -868,7 +860,6 @@ class LipsyncPipeline(DiffusionPipeline):
 
             start_time = time.time()
             # Restoring the full video for the current batch
-            restored_frames = []
             restored_frames = self.process_frames_parallel(
                 synced_video_frames_batch,
                 video_frames_batch,
@@ -877,14 +868,14 @@ class LipsyncPipeline(DiffusionPipeline):
                 face_detected_mask_batch
             )
             elapsed_time = time.time() - start_time
-            print(f"Операция 'Restoring the full video for the current batch' заняла {elapsed_time:.2f} секунд")
+            print(f"'Restoring the full video for the current batch' operation took {elapsed_time:.2f} secs")
 
             batch_output_path = os.path.join(temp_dir, f"batch_{batch_count:04d}.mp4")
 
             start_time = time.time()
             write_video(batch_output_path, np.array(restored_frames), fps=video_fps)
             elapsed_time = time.time() - start_time
-            print(f"Операция 'write_video' заняла {elapsed_time:.2f} секунд")
+            print(f"'Write_video' operation took {elapsed_time:.2f} secs")
 
             part_paths.append(batch_output_path)
 
@@ -908,7 +899,7 @@ class LipsyncPipeline(DiffusionPipeline):
         combined_video_path = os.path.join(temp_dir, "video.mp4")
         combine_video_parts(part_paths, combined_video_path)
         elapsed_time = time.time() - start_time
-        print(f"Операция 'Combining processed video' заняла {elapsed_time:.2f} секунд")
+        print(f"'Combining current batch video' operation took {elapsed_time:.2f} secs")
 
         # 10. Trim the audio to the length of the video
         print("Processing audio...")
@@ -927,7 +918,7 @@ class LipsyncPipeline(DiffusionPipeline):
         command = f"ffmpeg -y -loglevel error -i {combined_video_path} -i {audio_output_path} -c:v copy -c:a aac -b:a 320k -map 0:v:0 -map 1:a:0 {video_out_path}"
         subprocess.run(command, shell=True)
         elapsed_time = time.time() - start_time
-        print(f"Операция 'Combining video and audio' заняла {elapsed_time:.2f} секунд")
+        print(f"'Combining video and audio' operation took {elapsed_time:.2f} secs")
 
         # 12. Cleaning temporary files
         if os.path.exists(temp_dir):
