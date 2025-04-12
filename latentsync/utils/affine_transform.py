@@ -85,34 +85,49 @@ class AlignRestore(object):
     def restore_img(self, input_img, face, affine_matrix):
         h, w, _ = input_img.shape
         h_up, w_up = int(h * self.upscale_factor), int(w * self.upscale_factor)
-        upsample_img = cv2.resize(input_img, (w_up, h_up), interpolation=cv2.INTER_LANCZOS4)
+
+        if not hasattr(self, '_erosion_kernel_small'):
+            self._erosion_kernel_small = np.ones((int(2 * self.upscale_factor), int(2 * self.upscale_factor)), np.uint8)
+
+        upsample_img = cv2.resize(input_img, (w_up, h_up), interpolation=cv2.INTER_LINEAR)
+
         inverse_affine = cv2.invertAffineTransform(affine_matrix)
         inverse_affine *= self.upscale_factor
-        if self.upscale_factor > 1:
-            extra_offset = 0.5 * self.upscale_factor
-        else:
-            extra_offset = 0
+
+        extra_offset = 0.5 * self.upscale_factor if self.upscale_factor > 1 else 0
         inverse_affine[:, 2] += extra_offset
-        inv_restored = cv2.warpAffine(face, inverse_affine, (w_up, h_up), flags=cv2.INTER_LANCZOS4)
-        mask = np.ones((self.face_size[1], self.face_size[0]), dtype=np.float32)
-        inv_mask = cv2.warpAffine(mask, inverse_affine, (w_up, h_up))
-        inv_mask_erosion = cv2.erode(
-            inv_mask, np.ones((int(2 * self.upscale_factor), int(2 * self.upscale_factor)), np.uint8)
-        )
+
+        inv_restored = cv2.warpAffine(face, inverse_affine, (w_up, h_up), flags=cv2.INTER_LINEAR)
+
+        if not hasattr(self, '_face_mask') or self._face_mask.shape != (self.face_size[1], self.face_size[0]):
+            self._face_mask = np.ones((self.face_size[1], self.face_size[0]), dtype=np.float32)
+
+        inv_mask = cv2.warpAffine(self._face_mask, inverse_affine, (w_up, h_up))
+
+        inv_mask_erosion = cv2.erode(inv_mask, self._erosion_kernel_small)
+
         pasted_face = inv_mask_erosion[:, :, None] * inv_restored
         total_face_area = np.sum(inv_mask_erosion)
-        w_edge = int(total_face_area**0.5) // 20
+        w_edge = int(total_face_area ** 0.5) // 20
         erosion_radius = w_edge * 2
-        inv_mask_center = cv2.erode(inv_mask_erosion, np.ones((erosion_radius, erosion_radius), np.uint8))
+
+        if not hasattr(self, '_erosion_kernel_large') or self._erosion_kernel_large.shape[0] != erosion_radius:
+            self._erosion_kernel_large = np.ones((erosion_radius, erosion_radius), np.uint8)
+
+        inv_mask_center = cv2.erode(inv_mask_erosion, self._erosion_kernel_large)
+
         blur_size = w_edge * 2
-        inv_soft_mask = cv2.GaussianBlur(inv_mask_center, (blur_size + 1, blur_size + 1), 0)
+        if blur_size % 2 == 0:
+            blur_size += 1
+
+        inv_soft_mask = cv2.GaussianBlur(inv_mask_center, (blur_size, blur_size), 0)
         inv_soft_mask = inv_soft_mask[:, :, None]
+
         upsample_img = inv_soft_mask * pasted_face + (1 - inv_soft_mask) * upsample_img
-        if np.max(upsample_img) > 256:
-            upsample_img = upsample_img.astype(np.uint16)
-        else:
-            upsample_img = upsample_img.astype(np.uint8)
-        return upsample_img
+
+        if np.max(upsample_img) > 255:
+            return upsample_img.astype(np.uint16)
+        return upsample_img.astype(np.uint8)
 
 
 class laplacianSmooth:

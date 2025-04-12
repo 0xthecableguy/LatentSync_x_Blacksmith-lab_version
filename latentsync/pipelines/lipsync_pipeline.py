@@ -1,4 +1,5 @@
 # Adapted from https://github.com/guoyww/AnimateDiff/blob/main/animatediff/pipelines/pipeline_animation.py
+import concurrent
 import gc
 import inspect
 import math
@@ -324,20 +325,43 @@ class LipsyncPipeline(DiffusionPipeline):
 
         return faces, boxes, affine_matrices, face_detected_mask
 
+    def process_frames_parallel(self, synced_frames, original_frames, boxes, affine_matrices, face_masks,
+                                max_workers=4):
+        results = [None] * len(synced_frames)
+
+        # Быстрая обработка кадров без лиц
+        for i, has_face in enumerate(face_masks):
+            if not has_face:
+                results[i] = original_frames[i]
+
+        # Обработка кадров с лицами параллельно
+        face_indices = [i for i, has_face in enumerate(face_masks) if has_face]
+
+        if not face_indices:
+            return results
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    self.restore_single_frame,
+                    synced_frames[i],
+                    original_frames[i],
+                    boxes[i],
+                    affine_matrices[i]
+                ): i for i in face_indices
+            }
+
+            for future in concurrent.futures.as_completed(futures):
+                idx = futures[future]
+                try:
+                    results[idx] = future.result()
+                except Exception as e:
+                    print(f"Ошибка при обработке кадра {idx}: {e}")
+                    results[idx] = original_frames[idx]
+
+        return results
+
     def restore_single_frame(self, processed_frame, original_frame, box, affine_matrix):
-        """
-        Restores the processed frame to its original dimensions.
-
-        Args:
-            processed_frame: Processed frame (tensor).
-            original_frame: Original frame.
-            box: Face bounding box.
-            affine_matrix: Affine transformation matrix.
-
-        Returns:
-            np.ndarray: Restored frame.
-        """
-        # If the face was not detected, we return the original frame
         if box is None or affine_matrix is None:
             return original_frame
 
@@ -833,14 +857,13 @@ class LipsyncPipeline(DiffusionPipeline):
             start_time = time.time()
             # Restoring the full video for the current batch
             restored_frames = []
-            for i, frame in enumerate(synced_video_frames_batch):
-                if face_detected_mask_batch[i]:
-                    restored_frame = self.restore_single_frame(
-                        frame, video_frames_batch[i], boxes_batch[i], affine_matrices_batch[i]
-                    )
-                    restored_frames.append(restored_frame)
-                else:
-                    restored_frames.append(video_frames_batch[i])
+            restored_frames = self.process_frames_parallel(
+                synced_video_frames_batch,
+                video_frames_batch,
+                boxes_batch,
+                affine_matrices_batch,
+                face_detected_mask_batch
+            )
             elapsed_time = time.time() - start_time
             print(f"Операция 'Restoring the full video for the current batch' заняла {elapsed_time:.2f} секунд")
 
