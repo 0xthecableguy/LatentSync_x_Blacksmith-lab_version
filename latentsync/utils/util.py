@@ -160,7 +160,7 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
 #         out.write(frame)
 #     out.release()
 
-
+# # Best quality with parallel processing
 def write_video(batch_output_path, frames, fps=25):
     height, width = frames[0].shape[:2]
 
@@ -168,7 +168,7 @@ def write_video(batch_output_path, frames, fps=25):
     temp_frames_dir = os.path.join(temp_dir, f"temp_frames_{os.path.basename(batch_output_path).split('.')[0]}")
     os.makedirs(temp_frames_dir, exist_ok=True)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         futures = []
         for i, frame in enumerate(frames):
             frame_path = os.path.join(temp_frames_dir, f"frame_{i:04d}.png")
@@ -177,7 +177,7 @@ def write_video(batch_output_path, frames, fps=25):
             )
         for future in concurrent.futures.as_completed(futures):
             if future.exception() is not None:
-                print(f"Ошибка при записи кадра: {future.exception()}")
+                print(f"Error processing frame: {future.exception()}")
 
     frames_pattern = os.path.join(temp_frames_dir, "frame_%04d.png")
     command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
@@ -187,6 +187,7 @@ def write_video(batch_output_path, frames, fps=25):
 
     return batch_output_path
 
+# # Best quality
 # def write_video(batch_output_path, frames, fps=25):
 #     height, width = frames[0].shape[:2]
 #
@@ -203,6 +204,29 @@ def write_video(batch_output_path, frames, fps=25):
 #     subprocess.run(command, shell=True)
 #
 #     shutil.rmtree(temp_frames_dir)
+#
+#     return batch_output_path
+
+# # Low quality but faster processing
+# def write_video(batch_output_path, frames, fps=25):
+#     height, width = frames[0].shape[:2]
+#
+#     temp_video_path = batch_output_path
+#
+#     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+#     temp_writer = cv2.VideoWriter(temp_video_path, fourcc, fps, (width, height))
+#
+#     for frame in frames:
+#         temp_writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+#
+#     temp_writer.release()
+#
+#     final_video_path = batch_output_path.replace('.mp4', '_final.mp4')
+#     command = f"ffmpeg -y -loglevel error -i {temp_video_path} -c:v libx264 -crf 10 -preset medium {final_video_path}"
+#     subprocess.run(command, shell=True)
+#
+#     if os.path.exists(final_video_path):
+#         os.replace(final_video_path, batch_output_path)
 #
 #     return batch_output_path
 

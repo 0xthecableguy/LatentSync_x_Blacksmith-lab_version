@@ -326,7 +326,7 @@ class LipsyncPipeline(DiffusionPipeline):
         return faces, boxes, affine_matrices, face_detected_mask
 
     def process_frames_parallel(self, synced_frames, original_frames, boxes, affine_matrices, face_masks,
-                                max_workers=4):
+                                max_workers=8):
         num_frames = len(synced_frames)
         results = [None] * num_frames
 
