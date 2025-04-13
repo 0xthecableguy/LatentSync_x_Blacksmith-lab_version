@@ -542,6 +542,8 @@ class LipsyncPipeline(DiffusionPipeline):
         total_batches = math.ceil(total_frames / batch_frames)
         batch_progress = tqdm.tqdm(total=total_batches, desc="Processing video batches")
 
+        main_start_time = time.time()
+
         #7. Video processing in parts
         while processed_frames < total_frames:
             # Clearing CUDA memory before processing a new batch
@@ -919,6 +921,9 @@ class LipsyncPipeline(DiffusionPipeline):
         subprocess.run(command, shell=True)
         elapsed_time = time.time() - start_time
         print(f"'Combining video and audio' operation took {elapsed_time:.2f} secs")
+
+        elapsed_time = time.time() - main_start_time
+        print(f"All process took {elapsed_time / 60:.2f} minutes")
 
         # 12. Cleaning temporary files
         if os.path.exists(temp_dir):
