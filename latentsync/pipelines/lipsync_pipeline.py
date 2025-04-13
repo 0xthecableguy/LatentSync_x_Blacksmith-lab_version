@@ -280,10 +280,56 @@ class LipsyncPipeline(DiffusionPipeline):
         faces = torch.stack(faces)
         return faces, boxes, affine_matrices, face_indices, face_detected_mask
 
+    # def affine_transform_video_safe(self, video_frames: np.ndarray):
+    #     """
+    #     A safe version of the affine_transform_video method that correctly
+    #     handles frames without faces.
+    #
+    #     Args:
+    #         video_frames: An array of video frames
+    #
+    #     Returns:
+    #         faces: A tensor of processed faces
+    #         boxes: A list of face bounding boxes
+    #         affine_matrices: A list of affine matrices
+    #         face_detected_mask: A face detection mask
+    #     """
+    #     faces = []
+    #     boxes = []
+    #     affine_matrices = []
+    #     face_detected_mask = []  # Mask for tracking frames with faces
+    #
+    #     print(f"Affine transforming {len(video_frames)} frames...")
+    #     for frame in tqdm.tqdm(video_frames):
+    #         try:
+    #             face, box, affine_matrix = self.image_processor.affine_transform_safe(frame)
+    #             faces.append(face)
+    #             boxes.append(box)
+    #             affine_matrices.append(affine_matrix)
+    #             # True if the face is found (box and affine_matrix are not None)
+    #             face_detected_mask.append(box is not None and affine_matrix is not None)
+    #         except Exception as e:
+    #             print(f"Error during affine transform: {e}")
+    #             # In case of an error, add the original frame and mark that the face is not detected
+    #             resized_frame = cv2.resize(frame, (self.image_processor.resolution, self.image_processor.resolution),
+    #                                        interpolation=cv2.INTER_LANCZOS4)
+    #             face_tensor = torch.from_numpy(resized_frame).permute(2, 0, 1)
+    #             faces.append(face_tensor)
+    #             boxes.append(None)
+    #             affine_matrices.append(None)
+    #             face_detected_mask.append(False)
+    #
+    #     # Convert the list of faces into a tensor
+    #     faces = torch.stack(faces)
+    #     face_detected_mask = np.array(face_detected_mask)
+    #
+    #     return faces, boxes, affine_matrices, face_detected_mask
+
+    # Parallel processing
     def affine_transform_video_safe(self, video_frames: np.ndarray):
         """
         A safe version of the affine_transform_video method that correctly
-        handles frames without faces.
+        handles frames without faces, using parallel processing.
 
         Args:
             video_frames: An array of video frames
@@ -294,32 +340,42 @@ class LipsyncPipeline(DiffusionPipeline):
             affine_matrices: A list of affine matrices
             face_detected_mask: A face detection mask
         """
-        faces = []
-        boxes = []
-        affine_matrices = []
-        face_detected_mask = []  # Mask for tracking frames with faces
+        import concurrent.futures
 
-        print(f"Affine transforming {len(video_frames)} frames...")
-        for frame in tqdm.tqdm(video_frames):
+        def process_single_frame(idx, frame):
             try:
                 face, box, affine_matrix = self.image_processor.affine_transform_safe(frame)
-                faces.append(face)
-                boxes.append(box)
-                affine_matrices.append(affine_matrix)
-                # True if the face is found (box and affine_matrix are not None)
-                face_detected_mask.append(box is not None and affine_matrix is not None)
+                return idx, face, box, affine_matrix, (box is not None and affine_matrix is not None)
             except Exception as e:
-                print(f"Error during affine transform: {e}")
-                # In case of an error, add the original frame and mark that the face is not detected
-                resized_frame = cv2.resize(frame, (self.image_processor.resolution, self.image_processor.resolution),
-                                           interpolation=cv2.INTER_LANCZOS4)
+                print(f"Error during affine transform on frame {idx}: {e}")
+                resized_frame = cv2.resize(
+                    frame,
+                    (self.image_processor.resolution, self.image_processor.resolution),
+                    interpolation=cv2.INTER_LANCZOS4
+                )
                 face_tensor = torch.from_numpy(resized_frame).permute(2, 0, 1)
-                faces.append(face_tensor)
-                boxes.append(None)
-                affine_matrices.append(None)
-                face_detected_mask.append(False)
+                return idx, face_tensor, None, None, False
 
-        # Convert the list of faces into a tensor
+        print(f"Affine transforming {len(video_frames)} frames using parallel processing...")
+
+        faces = [None] * len(video_frames)
+        boxes = [None] * len(video_frames)
+        affine_matrices = [None] * len(video_frames)
+        face_detected_mask = [False] * len(video_frames)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            future_to_idx = {
+                executor.submit(process_single_frame, idx, frame): idx
+                for idx, frame in enumerate(video_frames)
+            }
+
+            for future in tqdm.tqdm(concurrent.futures.as_completed(future_to_idx), total=len(video_frames)):
+                idx, face, box, affine_matrix, has_face = future.result()
+                faces[idx] = face
+                boxes[idx] = box
+                affine_matrices[idx] = affine_matrix
+                face_detected_mask[idx] = has_face
+
         faces = torch.stack(faces)
         face_detected_mask = np.array(face_detected_mask)
 
@@ -500,6 +556,9 @@ class LipsyncPipeline(DiffusionPipeline):
         temp_video_path = os.path.join(temp_fps_dir, "video_25fps.mp4")
         command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p {temp_video_path}"
 
+        # # Alternative (the same but without audio)
+        # command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -an {temp_video_path}"
+
         # # Alternative (lower quality but faster)
         # command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 10 -preset medium -an {temp_video_path}"
 
@@ -546,6 +605,8 @@ class LipsyncPipeline(DiffusionPipeline):
 
         #7. Video processing in parts
         while processed_frames < total_frames:
+            batch_start_time = time.time()
+
             # Clearing CUDA memory before processing a new batch
             torch.cuda.empty_cache()
 
@@ -892,6 +953,9 @@ class LipsyncPipeline(DiffusionPipeline):
             print(f"Debug: Completing batch {batch_count}, processed_frames was {processed_frames}")
             processed_frames += current_batch_size
             print(f"Debug: processed_frames now {processed_frames}")
+
+            elapsed_time = time.time() - batch_start_time
+            print(f"'Current batch processing' operation took {elapsed_time:.2f} secs")
 
         batch_progress.close()
 
