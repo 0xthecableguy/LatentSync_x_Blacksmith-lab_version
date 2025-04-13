@@ -327,24 +327,15 @@ class LipsyncPipeline(DiffusionPipeline):
 
     # Parallel processing
     def affine_transform_video_safe(self, video_frames: np.ndarray):
-        """
-        A safe version of the affine_transform_video method that correctly
-        handles frames without faces, using parallel processing.
-
-        Args:
-            video_frames: An array of video frames
-
-        Returns:
-            faces: A tensor of processed faces
-            boxes: A list of face bounding boxes
-            affine_matrices: A list of affine matrices
-            face_detected_mask: A face detection mask
-        """
         import concurrent.futures
+        import threading
+
+        gpu_lock = threading.Lock()
 
         def process_single_frame(idx, frame):
             try:
-                face, box, affine_matrix = self.image_processor.affine_transform_safe(frame)
+                with gpu_lock:
+                    face, box, affine_matrix = self.image_processor.affine_transform_safe(frame)
                 return idx, face, box, affine_matrix, (box is not None and affine_matrix is not None)
             except Exception as e:
                 print(f"Error during affine transform on frame {idx}: {e}")
@@ -363,7 +354,7 @@ class LipsyncPipeline(DiffusionPipeline):
         affine_matrices = [None] * len(video_frames)
         face_detected_mask = [False] * len(video_frames)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             future_to_idx = {
                 executor.submit(process_single_frame, idx, frame): idx
                 for idx, frame in enumerate(video_frames)
