@@ -160,32 +160,32 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
 #         out.write(frame)
 #     out.release()
 
-# Best quality with parallel processing
-def write_video(batch_output_path, frames, fps=25):
-    height, width = frames[0].shape[:2]
-
-    temp_dir = os.path.dirname(batch_output_path)
-    temp_frames_dir = os.path.join(temp_dir, f"temp_frames_{os.path.basename(batch_output_path).split('.')[0]}")
-    os.makedirs(temp_frames_dir, exist_ok=True)
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-        futures = []
-        for i, frame in enumerate(frames):
-            frame_path = os.path.join(temp_frames_dir, f"frame_{i:04d}.png")
-            futures.append(
-                executor.submit(cv2.imwrite, frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-            )
-        for future in concurrent.futures.as_completed(futures):
-            if future.exception() is not None:
-                print(f"Error processing frame: {future.exception()}")
-
-    frames_pattern = os.path.join(temp_frames_dir, "frame_%04d.png")
-    command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
-    subprocess.run(command, shell=True)
-
-    shutil.rmtree(temp_frames_dir)
-
-    return batch_output_path
+# # Best quality with parallel processing
+# def write_video(batch_output_path, frames, fps=25):
+#     height, width = frames[0].shape[:2]
+#
+#     temp_dir = os.path.dirname(batch_output_path)
+#     temp_frames_dir = os.path.join(temp_dir, f"temp_frames_{os.path.basename(batch_output_path).split('.')[0]}")
+#     os.makedirs(temp_frames_dir, exist_ok=True)
+#
+#     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+#         futures = []
+#         for i, frame in enumerate(frames):
+#             frame_path = os.path.join(temp_frames_dir, f"frame_{i:04d}.png")
+#             futures.append(
+#                 executor.submit(cv2.imwrite, frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+#             )
+#         for future in concurrent.futures.as_completed(futures):
+#             if future.exception() is not None:
+#                 print(f"Error processing frame: {future.exception()}")
+#
+#     frames_pattern = os.path.join(temp_frames_dir, "frame_%04d.png")
+#     command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
+#     subprocess.run(command, shell=True)
+#
+#     shutil.rmtree(temp_frames_dir)
+#
+#     return batch_output_path
 
 # # Best quality
 # def write_video(batch_output_path, frames, fps=25):
@@ -229,6 +229,37 @@ def write_video(batch_output_path, frames, fps=25):
 #         os.replace(final_video_path, batch_output_path)
 #
 #     return batch_output_path
+
+# Optimal processing
+def write_video(batch_output_path, frames, fps=25):
+    height, width = frames[0].shape[:2]
+
+    temp_video_path = batch_output_path.replace('.mp4', '_temp.mp4')
+
+    command = [
+        'ffmpeg', '-y', '-loglevel', 'error',
+        '-f', 'rawvideo', '-vcodec', 'rawvideo',
+        '-s', f'{width}x{height}', '-pix_fmt', 'rgb24',
+        '-r', str(fps), '-i', '-',
+        '-c:v', 'libx264', '-crf', '0', '-preset', 'medium',
+        '-pix_fmt', 'yuv444p', temp_video_path
+    ]
+
+    process = subprocess.Popen(command, stdin=subprocess.PIPE)
+
+    for frame in frames:
+        process.stdin.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR).tobytes())
+
+    process.stdin.close()
+    process.wait()
+
+    final_command = f"ffmpeg -y -loglevel error -i {temp_video_path} -c:v libx264 -crf 0 -preset medium -pix_fmt yuv444p -tune film {batch_output_path}"
+    subprocess.run(final_command, shell=True)
+
+    if os.path.exists(temp_video_path):
+        os.remove(temp_video_path)
+
+    return batch_output_path
 
 def init_dist(backend="nccl", **kwargs):
     """Initializes distributed environment."""
