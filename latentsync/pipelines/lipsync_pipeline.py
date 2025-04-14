@@ -481,7 +481,7 @@ class LipsyncPipeline(DiffusionPipeline):
         audio_path: str,
         video_out_path: str,
         video_mask_path: str = None,
-        num_frames: int = 64,
+        num_frames: int = 16,
         video_fps: int = 25,
         audio_sample_rate: int = 16000,
         height: Optional[int] = None,

@@ -207,59 +207,59 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
 #
 #     return batch_output_path
 
-# # Low quality but faster processing
-# def write_video(batch_output_path, frames, fps=25):
-#     height, width = frames[0].shape[:2]
-#
-#     temp_video_path = batch_output_path
-#
-#     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-#     temp_writer = cv2.VideoWriter(temp_video_path, fourcc, fps, (width, height))
-#
-#     for frame in frames:
-#         temp_writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-#
-#     temp_writer.release()
-#
-#     final_video_path = batch_output_path.replace('.mp4', '_final.mp4')
-#     command = f"ffmpeg -y -loglevel error -i {temp_video_path} -c:v libx264 -crf 10 -preset medium {final_video_path}"
-#     subprocess.run(command, shell=True)
-#
-#     if os.path.exists(final_video_path):
-#         os.replace(final_video_path, batch_output_path)
-#
-#     return batch_output_path
-
-# Optimal processing
+# Low quality but faster processing
 def write_video(batch_output_path, frames, fps=25):
     height, width = frames[0].shape[:2]
 
-    temp_video_path = batch_output_path.replace('.mp4', '_temp.mp4')
+    temp_video_path = batch_output_path
 
-    command = [
-        'ffmpeg', '-y', '-loglevel', 'error',
-        '-f', 'rawvideo', '-vcodec', 'rawvideo',
-        '-s', f'{width}x{height}', '-pix_fmt', 'rgb24',
-        '-r', str(fps), '-i', '-',
-        '-c:v', 'libx264', '-crf', '0', '-preset', 'medium',
-        '-pix_fmt', 'yuv444p', temp_video_path
-    ]
-
-    process = subprocess.Popen(command, stdin=subprocess.PIPE)
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    temp_writer = cv2.VideoWriter(temp_video_path, fourcc, fps, (width, height))
 
     for frame in frames:
-        process.stdin.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR).tobytes())
+        temp_writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
 
-    process.stdin.close()
-    process.wait()
+    temp_writer.release()
 
-    final_command = f"ffmpeg -y -loglevel error -i {temp_video_path} -c:v libx264 -crf 0 -preset medium -pix_fmt yuv444p -tune film {batch_output_path}"
-    subprocess.run(final_command, shell=True)
+    final_video_path = batch_output_path.replace('.mp4', '_final.mp4')
+    command = f"ffmpeg -y -loglevel error -i {temp_video_path} -c:v libx264 -crf 10 -preset medium {final_video_path}"
+    subprocess.run(command, shell=True)
 
-    if os.path.exists(temp_video_path):
-        os.remove(temp_video_path)
+    if os.path.exists(final_video_path):
+        os.replace(final_video_path, batch_output_path)
 
     return batch_output_path
+
+# # Optimal processing
+# def write_video(batch_output_path, frames, fps=25):
+#     height, width = frames[0].shape[:2]
+#
+#     temp_video_path = batch_output_path.replace('.mp4', '_temp.mp4')
+#
+#     command = [
+#         'ffmpeg', '-y', '-loglevel', 'error',
+#         '-f', 'rawvideo', '-vcodec', 'rawvideo',
+#         '-s', f'{width}x{height}', '-pix_fmt', 'rgb24',
+#         '-r', str(fps), '-i', '-',
+#         '-c:v', 'libx264', '-crf', '0', '-preset', 'medium',
+#         '-pix_fmt', 'yuv444p', temp_video_path
+#     ]
+#
+#     process = subprocess.Popen(command, stdin=subprocess.PIPE)
+#
+#     for frame in frames:
+#         process.stdin.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR).tobytes())
+#
+#     process.stdin.close()
+#     process.wait()
+#
+#     final_command = f"ffmpeg -y -loglevel error -i {temp_video_path} -c:v libx264 -crf 0 -preset medium -pix_fmt yuv444p -tune film {batch_output_path}"
+#     subprocess.run(final_command, shell=True)
+#
+#     if os.path.exists(temp_video_path):
+#         os.remove(temp_video_path)
+#
+#     return batch_output_path
 
 def init_dist(backend="nccl", **kwargs):
     """Initializes distributed environment."""
