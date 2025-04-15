@@ -538,23 +538,36 @@ class LipsyncPipeline(DiffusionPipeline):
 
         run_id = str(uuid.uuid4())[:8]
 
-        # Converting video to 25 FPS first
+        # Converting video to 25 FPS only if needed
         temp_fps_dir = f"temp_fps_conversion_{run_id}"
         if os.path.exists(temp_fps_dir):
             shutil.rmtree(temp_fps_dir)
         os.makedirs(temp_fps_dir, exist_ok=True)
 
         temp_video_path = os.path.join(temp_fps_dir, "video_25fps.mp4")
-        # command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p {temp_video_path}"
 
-        # # Alternative (the same but without audio)
-        # command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -an {temp_video_path}"
+        current_cap = cv2.VideoCapture(video_path)
+        current_fps = round(current_cap.get(cv2.CAP_PROP_FPS))
+        current_cap.release()
 
-        # Alternative (lower quality but faster)
-        command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 10 -preset medium -an {temp_video_path}"
+        print(f"Current video FPS: {current_fps}")
 
-        print(f"Converting video to 25 FPS: {command}")
-        subprocess.run(command, shell=True)
+        if current_fps == 25:
+            print("Video is already 25 FPS, skipping conversion")
+            shutil.copy2(video_path, temp_video_path)
+        else:
+            print(f"Converting video from {current_fps} FPS to 25 FPS")
+
+            # command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p {temp_video_path}"
+
+            # # Alternative (the same but without audio)
+            # command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -an {temp_video_path}"
+
+            # Alternative (lower quality but faster)
+            command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 10 -preset medium -an {temp_video_path}"
+
+            print(f"Running conversion: {command}")
+            subprocess.run(command, shell=True)
 
         # Update video path for all subsequent operations and FPS for subsequent calculations
         video_path = temp_video_path
@@ -964,10 +977,27 @@ class LipsyncPipeline(DiffusionPipeline):
         video_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
 
-        audio_samples_remain_length = int(video_frame_count / video_fps * audio_sample_rate)
-        audio_samples = audio_samples[:audio_samples_remain_length].cpu().numpy()
-        audio_output_path = os.path.join(temp_dir, "audio.wav")
-        sf.write(audio_output_path, audio_samples, audio_sample_rate)
+        # # Legacy method
+        # audio_samples_remain_length = int(video_frame_count / video_fps * audio_sample_rate)
+        # audio_samples = audio_samples[:audio_samples_remain_length].cpu().numpy()
+        # audio_output_path = os.path.join(temp_dir, "audio.wav")
+        # sf.write(audio_output_path, audio_samples, audio_sample_rate)
+
+        audio_filename = os.path.basename(audio_path)
+        audio_name, audio_ext = os.path.splitext(audio_filename)
+        stereo_audio_filename = f"{audio_name}_stereo{audio_ext}"
+        stereo_audio_path = os.path.join(os.path.dirname(audio_path), stereo_audio_filename)
+
+        if not os.path.exists(stereo_audio_path):
+            print(f"Warning: Stereo audio file {stereo_audio_path} not found, using original audio")
+            stereo_audio_path = audio_path
+
+        video_duration = video_frame_count / video_fps
+
+        audio_output_path = os.path.join(temp_dir, "trimmed_audio.mp3")
+        trim_command = f"ffmpeg -y -loglevel error -i {stereo_audio_path} -t {video_duration} -c:a copy {audio_output_path}"
+        print(f"Trimming audio to match video length ({video_duration:.2f} seconds)")
+        subprocess.run(trim_command, shell=True)
 
         start_time = time.time()
         # 11. Combining video and audio

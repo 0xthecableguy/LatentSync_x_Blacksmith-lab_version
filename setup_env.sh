@@ -4,8 +4,15 @@ echo "Running environment setup script..."
 
 # Initialize Conda
 source ~/miniconda3/etc/profile.d/conda.sh
-conda create -y -n latentsync python=3.10.13
-conda activate latentsync
+
+if conda info --envs | grep -q latentsync; then
+    echo "Environment latentsync already exists, activating"
+    conda activate latentsync
+else
+    echo "Creating conda environment with Python 3.10.13"
+    conda create -y -n latentsync python=3.10.13
+    conda activate latentsync
+fi
 
 # Install ffmpeg
 conda install -y -c conda-forge ffmpeg

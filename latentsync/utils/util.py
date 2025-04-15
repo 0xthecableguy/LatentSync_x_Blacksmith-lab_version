@@ -149,7 +149,7 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
 
     return audio_samples
 
-
+# # Legacy version
 # def write_video(batch_output_path, frames, fps=25):
 #     height, width = frames[0].shape[:2]
 #     fourcc = cv2.VideoWriter_fourcc(*'avc1')
@@ -160,32 +160,32 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
 #         out.write(frame)
 #     out.release()
 
-# Best quality with parallel processing
-def write_video(batch_output_path, frames, fps=25):
-    height, width = frames[0].shape[:2]
-
-    temp_dir = os.path.dirname(batch_output_path)
-    temp_frames_dir = os.path.join(temp_dir, f"temp_frames_{os.path.basename(batch_output_path).split('.')[0]}")
-    os.makedirs(temp_frames_dir, exist_ok=True)
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-        futures = []
-        for i, frame in enumerate(frames):
-            frame_path = os.path.join(temp_frames_dir, f"frame_{i:04d}.png")
-            futures.append(
-                executor.submit(cv2.imwrite, frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-            )
-        for future in concurrent.futures.as_completed(futures):
-            if future.exception() is not None:
-                print(f"Error processing frame: {future.exception()}")
-
-    frames_pattern = os.path.join(temp_frames_dir, "frame_%04d.png")
-    command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
-    subprocess.run(command, shell=True)
-
-    shutil.rmtree(temp_frames_dir)
-
-    return batch_output_path
+# # Best quality with parallel processing
+# def write_video(batch_output_path, frames, fps=25):
+#     height, width = frames[0].shape[:2]
+#
+#     temp_dir = os.path.dirname(batch_output_path)
+#     temp_frames_dir = os.path.join(temp_dir, f"temp_frames_{os.path.basename(batch_output_path).split('.')[0]}")
+#     os.makedirs(temp_frames_dir, exist_ok=True)
+#
+#     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+#         futures = []
+#         for i, frame in enumerate(frames):
+#             frame_path = os.path.join(temp_frames_dir, f"frame_{i:04d}.png")
+#             futures.append(
+#                 executor.submit(cv2.imwrite, frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+#             )
+#         for future in concurrent.futures.as_completed(futures):
+#             if future.exception() is not None:
+#                 print(f"Error processing frame: {future.exception()}")
+#
+#     frames_pattern = os.path.join(temp_frames_dir, "frame_%04d.png")
+#     command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
+#     subprocess.run(command, shell=True)
+#
+#     shutil.rmtree(temp_frames_dir)
+#
+#     return batch_output_path
 
 # # Best quality
 # def write_video(batch_output_path, frames, fps=25):
@@ -260,6 +260,48 @@ def write_video(batch_output_path, frames, fps=25):
 #         os.remove(temp_video_path)
 #
 #     return batch_output_path
+
+# With GPU processing
+def write_video(batch_output_path, frames, fps=25):
+    height, width = frames[0].shape[:2]
+
+    temp_dir = os.path.dirname(batch_output_path)
+    temp_frames_dir = os.path.join(temp_dir, f"temp_frames_{os.path.basename(batch_output_path).split('.')[0]}")
+    os.makedirs(temp_frames_dir, exist_ok=True)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = []
+        for i, frame in enumerate(frames):
+            frame_path = os.path.join(temp_frames_dir, f"frame_{i:04d}.png")
+            futures.append(
+                executor.submit(cv2.imwrite, frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            )
+        for future in concurrent.futures.as_completed(futures):
+            if future.exception() is not None:
+                print(f"Error processing frame: {future.exception()}")
+
+    frames_pattern = os.path.join(temp_frames_dir, "frame_%04d.png")
+
+    try:
+        check_cmd = "ffmpeg -encoders | grep nvenc"
+        result = subprocess.run(check_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+        if "nvenc" in result.stdout:
+            print("Using GPU (NVENC) for processing video")
+            command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v h264_nvenc -b:v 30M -preset slow -rc:v constqp -qp 0 -pix_fmt yuv420p {batch_output_path}"
+        else:
+            print("GPU (NVENC) not found, CPU fallback")
+            command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
+    except Exception as e:
+        print(f"Error checking GPU availability: {e}")
+        command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
+
+    print(f"Starting command: {command}")
+    subprocess.run(command, shell=True)
+
+    shutil.rmtree(temp_frames_dir)
+
+    return batch_output_path
 
 def init_dist(backend="nccl", **kwargs):
     """Initializes distributed environment."""
