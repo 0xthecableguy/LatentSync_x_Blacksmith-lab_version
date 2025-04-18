@@ -1,9 +1,11 @@
 # Adapted from https://github.com/guoyww/AnimateDiff/blob/main/animatediff/pipelines/pipeline_animation.py
+import concurrent
 import gc
 import inspect
 import math
 import os
 import shutil
+import time
 import uuid
 from typing import Callable, List, Optional, Union
 import subprocess
@@ -31,7 +33,7 @@ from einops import rearrange
 import cv2
 
 from ..models.unet import UNet3DConditionModel
-from ..utils.util import read_audio, write_video, check_ffmpeg_installed, read_video_batch, \
+from ..utils.util import write_video, check_ffmpeg_installed, read_video_batch, \
     combine_video_parts
 from ..utils.image_processor import ImageProcessor, load_fixed_mask
 from ..whisper.audio2feature import Audio2Feature
@@ -252,76 +254,181 @@ class LipsyncPipeline(DiffusionPipeline):
         images = images.cpu().numpy()
         return images
 
-    def affine_transform_video(self, video_frames: np.ndarray):
-        faces = []
-        boxes = []
-        affine_matrices = []
-        face_indices = []
-        face_detected_mask = []
+    # def affine_transform_video(self, video_frames: np.ndarray):
+    #     faces = []
+    #     boxes = []
+    #     affine_matrices = []
+    #     face_indices = []
+    #     face_detected_mask = []
+    #
+    #     print(f"Affine transforming {len(video_frames)} frames...")
+    #     for i, frame in enumerate(tqdm.tqdm(video_frames)):
+    #         result = self.image_processor.affine_transform(frame)
+    #         if result is not None:
+    #             face, box, affine_matrix = result
+    #             faces.append(face)
+    #             boxes.append(box)
+    #             affine_matrices.append(affine_matrix)
+    #             face_indices.append(i)
+    #             face_detected_mask.append(True)
+    #         else:
+    #             face_detected_mask.append(False)
+    #
+    #     if not faces:
+    #         raise RuntimeError("No faces detected in the entire video")
+    #
+    #     faces = torch.stack(faces)
+    #     return faces, boxes, affine_matrices, face_indices, face_detected_mask
 
-        print(f"Affine transforming {len(video_frames)} frames...")
-        for i, frame in enumerate(tqdm.tqdm(video_frames)):
-            result = self.image_processor.affine_transform(frame)
-            if result is not None:
-                face, box, affine_matrix = result
-                faces.append(face)
-                boxes.append(box)
-                affine_matrices.append(affine_matrix)
-                face_indices.append(i)
-                face_detected_mask.append(True)
-            else:
-                face_detected_mask.append(False)
+    # # Legacy method
+    # def restore_video(self, faces, video_frames, boxes, affine_matrices):
+    #     video_frames = video_frames[: faces.shape[0]]
+    #     out_frames = []
+    #     print(f"Restoring {len(faces)} faces...")
+    #     for index, face in enumerate(tqdm.tqdm(faces)):
+    #         x1, y1, x2, y2 = boxes[index]
+    #         height = int(y2 - y1)
+    #         width = int(x2 - x1)
+    #         face = torchvision.transforms.functional.resize(face, size=(height, width), antialias=True)
+    #         face = rearrange(face, "c h w -> h w c")
+    #         face = (face / 2 + 0.5).clamp(0, 1)
+    #         face = (face * 255).to(torch.uint8).cpu().numpy()
+    #         # face = cv2.resize(face, (width, height), interpolation=cv2.INTER_LANCZOS4)
+    #         out_frame = self.image_processor.restorer.restore_img(video_frames[index], face, affine_matrices[index])
+    #         out_frames.append(out_frame)
+    #     return np.stack(out_frames, axis=0)
 
-        if not faces:
-            raise RuntimeError("No faces detected in the entire video")
+    # def affine_transform_video_safe(self, video_frames: np.ndarray):
+    #     """
+    #     A safe version of the affine_transform_video method that correctly
+    #     handles frames without faces.
+    #
+    #     Args:
+    #         video_frames: An array of video frames
+    #
+    #     Returns:
+    #         faces: A tensor of processed faces
+    #         boxes: A list of face bounding boxes
+    #         affine_matrices: A list of affine matrices
+    #         face_detected_mask: A face detection mask
+    #     """
+    #     faces = []
+    #     boxes = []
+    #     affine_matrices = []
+    #     face_detected_mask = []  # Mask for tracking frames with faces
+    #
+    #     print(f"Affine transforming {len(video_frames)} frames...")
+    #     for frame in tqdm.tqdm(video_frames):
+    #         try:
+    #             face, box, affine_matrix = self.image_processor.affine_transform_safe(frame)
+    #             faces.append(face)
+    #             boxes.append(box)
+    #             affine_matrices.append(affine_matrix)
+    #             # True if the face is found (box and affine_matrix are not None)
+    #             face_detected_mask.append(box is not None and affine_matrix is not None)
+    #         except Exception as e:
+    #             print(f"Error during affine transform: {e}")
+    #             # In case of an error, add the original frame and mark that the face is not detected
+    #             resized_frame = cv2.resize(frame, (self.image_processor.resolution, self.image_processor.resolution),
+    #                                        interpolation=cv2.INTER_LANCZOS4)
+    #             face_tensor = torch.from_numpy(resized_frame).permute(2, 0, 1)
+    #             faces.append(face_tensor)
+    #             boxes.append(None)
+    #             affine_matrices.append(None)
+    #             face_detected_mask.append(False)
+    #
+    #     # Convert the list of faces into a tensor
+    #     faces = torch.stack(faces)
+    #     face_detected_mask = np.array(face_detected_mask)
+    #
+    #     return faces, boxes, affine_matrices, face_detected_mask
 
-        faces = torch.stack(faces)
-        return faces, boxes, affine_matrices, face_indices, face_detected_mask
-
+    # Parallel processing
     def affine_transform_video_safe(self, video_frames: np.ndarray):
-        """
-        A safe version of the affine_transform_video method that correctly
-        handles frames without faces.
+        import concurrent.futures
+        import threading
 
-        Args:
-            video_frames: An array of video frames
+        gpu_lock = threading.Lock()
 
-        Returns:
-            faces: A tensor of processed faces
-            boxes: A list of face bounding boxes
-            affine_matrices: A list of affine matrices
-            face_detected_mask: A face detection mask
-        """
-        faces = []
-        boxes = []
-        affine_matrices = []
-        face_detected_mask = []  # Mask for tracking frames with faces
-
-        print(f"Affine transforming {len(video_frames)} frames...")
-        for frame in tqdm.tqdm(video_frames):
+        def process_single_frame(idx, frame):
             try:
-                face, box, affine_matrix = self.image_processor.affine_transform_safe(frame)
-                faces.append(face)
-                boxes.append(box)
-                affine_matrices.append(affine_matrix)
-                # True if the face is found (box and affine_matrix are not None)
-                face_detected_mask.append(box is not None and affine_matrix is not None)
+                with gpu_lock:
+                    face, box, affine_matrix = self.image_processor.affine_transform_safe(frame)
+                return idx, face, box, affine_matrix, (box is not None and affine_matrix is not None)
             except Exception as e:
-                print(f"Error during affine transform: {e}")
-                # In case of an error, add the original frame and mark that the face is not detected
-                resized_frame = cv2.resize(frame, (self.image_processor.resolution, self.image_processor.resolution),
-                                           interpolation=cv2.INTER_LANCZOS4)
+                print(f"Error during affine transform on frame {idx}: {e}")
+                resized_frame = cv2.resize(
+                    frame,
+                    (self.image_processor.resolution, self.image_processor.resolution),
+                    interpolation=cv2.INTER_LANCZOS4
+                )
                 face_tensor = torch.from_numpy(resized_frame).permute(2, 0, 1)
-                faces.append(face_tensor)
-                boxes.append(None)
-                affine_matrices.append(None)
-                face_detected_mask.append(False)
+                return idx, face_tensor, None, None, False
 
-        # Convert the list of faces into a tensor
+        print(f"Affine transforming {len(video_frames)} frames using parallel processing...")
+
+        faces = [None] * len(video_frames)
+        boxes = [None] * len(video_frames)
+        affine_matrices = [None] * len(video_frames)
+        face_detected_mask = [False] * len(video_frames)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_idx = {
+                executor.submit(process_single_frame, idx, frame): idx
+                for idx, frame in enumerate(video_frames)
+            }
+
+            for future in tqdm.tqdm(concurrent.futures.as_completed(future_to_idx), total=len(video_frames)):
+                idx, face, box, affine_matrix, has_face = future.result()
+                faces[idx] = face
+                boxes[idx] = box
+                affine_matrices[idx] = affine_matrix
+                face_detected_mask[idx] = has_face
+
         faces = torch.stack(faces)
         face_detected_mask = np.array(face_detected_mask)
 
         return faces, boxes, affine_matrices, face_detected_mask
+
+    def process_frames_parallel(self, synced_frames, original_frames, boxes, affine_matrices, face_masks,
+                                max_workers=8):
+        num_frames = len(synced_frames)
+        results = [None] * num_frames
+
+        face_indices = []
+        no_face_indices = []
+
+        for i in range(num_frames):
+            if face_masks[i] and boxes[i] is not None and affine_matrices[i] is not None:
+                face_indices.append(i)
+            else:
+                no_face_indices.append(i)
+                results[i] = original_frames[i]
+
+        if not face_indices:
+            return results
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_index = {}
+            for i in face_indices:
+                future = executor.submit(
+                    self.restore_single_frame,
+                    synced_frames[i],
+                    original_frames[i],
+                    boxes[i],
+                    affine_matrices[i]
+                )
+                future_to_index[future] = i
+
+            for future in concurrent.futures.as_completed(future_to_index):
+                idx = future_to_index[future]
+                try:
+                    results[idx] = future.result()
+                except Exception as e:
+                    print(f"Error processing frame {idx}: {e}")
+                    results[idx] = original_frames[idx]
+
+        return results
 
     def restore_single_frame(self, processed_frame, original_frame, box, affine_matrix):
         """
@@ -368,22 +475,6 @@ class LipsyncPipeline(DiffusionPipeline):
             # Returning the original frame in case of an error
             return original_frame
 
-    # def restore_video(self, faces, video_frames, boxes, affine_matrices):
-    #     video_frames = video_frames[: faces.shape[0]]
-    #     out_frames = []
-    #     print(f"Restoring {len(faces)} faces...")
-    #     for index, face in enumerate(tqdm.tqdm(faces)):
-    #         x1, y1, x2, y2 = boxes[index]
-    #         height = int(y2 - y1)
-    #         width = int(x2 - x1)
-    #         face = torchvision.transforms.functional.resize(face, size=(height, width), antialias=True)
-    #         face = rearrange(face, "c h w -> h w c")
-    #         face = (face / 2 + 0.5).clamp(0, 1)
-    #         face = (face * 255).to(torch.uint8).cpu().numpy()
-    #         # face = cv2.resize(face, (width, height), interpolation=cv2.INTER_LANCZOS4)
-    #         out_frame = self.image_processor.restorer.restore_img(video_frames[index], face, affine_matrices[index])
-    #         out_frames.append(out_frame)
-    #     return np.stack(out_frames, axis=0)
 
     @torch.no_grad()
     def __call__(
@@ -392,7 +483,7 @@ class LipsyncPipeline(DiffusionPipeline):
         audio_path: str,
         video_out_path: str,
         video_mask_path: str = None,
-        num_frames: int = 64,
+        num_frames: int = 16,
         video_fps: int = 25,
         audio_sample_rate: int = 16000,
         height: Optional[int] = None,
@@ -445,20 +536,113 @@ class LipsyncPipeline(DiffusionPipeline):
         whisper_feature = self.audio_encoder.audio2feat(audio_path)
         whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
         print(f"Audio chunks created for {video_fps} FPS")
-        audio_samples = read_audio(audio_path)
 
+        # # Legacy. There is no need to use low sampling rate in final video-result
+        # audio_samples = read_audio(audio_path)
+
+        # 6. Converting video to 25 FPS only if needed
+        # Determining process id to use separate dirs for parallel processing
         run_id = str(uuid.uuid4())[:8]
 
-        # Converting video to 25 FPS first
         temp_fps_dir = f"temp_fps_conversion_{run_id}"
         if os.path.exists(temp_fps_dir):
             shutil.rmtree(temp_fps_dir)
         os.makedirs(temp_fps_dir, exist_ok=True)
 
         temp_video_path = os.path.join(temp_fps_dir, "video_25fps.mp4")
-        command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p {temp_video_path}"
-        print(f"Converting video to 25 FPS: {command}")
-        subprocess.run(command, shell=True)
+
+        try:
+            fps_cmd = [
+                'ffprobe',
+                '-v', 'error',
+                '-select_streams', 'v:0',
+                '-show_entries', 'stream=r_frame_rate',
+                '-of', 'default=noprint_wrappers=1:nokey=1',
+                video_path
+            ]
+            result = subprocess.run(fps_cmd, capture_output=True, text=True)
+            fps_str = result.stdout.strip()
+
+            if fps_str and '/' in fps_str:
+                numerator, denominator = map(int, fps_str.split('/'))
+                current_fps = numerator / denominator
+                print(f"Current video FPS: {current_fps}")
+            else:
+                # Fallback to OpenCV method
+                current_cap = cv2.VideoCapture(video_path)
+                current_fps = round(current_cap.get(cv2.CAP_PROP_FPS))
+                current_cap.release()
+                print(f"Current video FPS (OpenCV): {current_fps}")
+        except Exception as e:
+            print(f"Error determining FPS with ffprobe, using OpenCV: {e}")
+            current_cap = cv2.VideoCapture(video_path)
+            current_fps = round(current_cap.get(cv2.CAP_PROP_FPS))
+            current_cap.release()
+            print(f"Current video FPS (OpenCV): {current_fps}")
+
+        if current_fps == 25:
+            print("Video is already 25 FPS, skipping conversion")
+            shutil.copy2(video_path, temp_video_path)
+        else:
+            print(f"Converting video from {current_fps} FPS to 25 FPS")
+
+            gpu_available = False
+
+            try:
+                # Run FFmpeg to list available encoders
+                cmd = ['/usr/bin/ffmpeg', '-encoders']
+                result = subprocess.run(cmd, capture_output=True, text=True)
+
+                # Check if h264_nvenc is among available encoders
+                if 'h264_nvenc' in result.stdout:
+                    # Try a test encoding
+                    test_cmd = [
+                        '/usr/bin/ffmpeg',
+                        '-f', 'lavfi',
+                        '-i', 'nullsrc=s=640x480:d=1',
+                        '-c:v', 'h264_nvenc',
+                        '-f', 'null',
+                        '-'
+                    ]
+                    test_result = subprocess.run(test_cmd, capture_output=True, text=True)
+
+                    if test_result.returncode == 0:
+                        gpu_available = True
+                        print("GPU NVENC available and will be used for FPS conversion")
+            except Exception as e:
+                print(f"Error checking GPU availability: {e}")
+                gpu_available = False
+
+            if gpu_available:
+                # GPU version with maximum quality settings
+                command = f"/usr/bin/ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v h264_nvenc -preset p7 -tune hq -b:v 100M -bufsize 100M -rc vbr -rc-lookahead 32 -spatial_aq 1 -temporal_aq 1 -aq-strength 15 -nonref_p 0 -pix_fmt yuv420p -an {temp_video_path}"
+            else:
+                # CPU version with maximum quality settings
+                command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -an {temp_video_path}"
+
+            print(f"Running conversion: {command}")
+            try:
+                subprocess.run(command, shell=True, check=True)
+
+                # Verify the file was created and has correct FPS
+                if not os.path.exists(temp_video_path):
+                    raise Exception(f"Output file not created: {temp_video_path}")
+
+                # Check if conversion succeeded
+                check_cap = cv2.VideoCapture(temp_video_path)
+                actual_fps = round(check_cap.get(cv2.CAP_PROP_FPS))
+                check_cap.release()
+
+                if actual_fps != 25:
+                    raise Exception(f"FPS conversion failed. Expected 25 FPS, got {actual_fps} FPS")
+
+            except Exception as e:
+                print(f"Error during GPU conversion: {e}")
+                if gpu_available:
+                    print("Falling back to CPU for conversion")
+                    # CPU fallback with maximum quality
+                    fallback_command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -an {temp_video_path}"
+                    subprocess.run(fallback_command, shell=True, check=True)
 
         # Update video path for all subsequent operations and FPS for subsequent calculations
         video_path = temp_video_path
@@ -496,8 +680,13 @@ class LipsyncPipeline(DiffusionPipeline):
         total_batches = math.ceil(total_frames / batch_frames)
         batch_progress = tqdm.tqdm(total=total_batches, desc="Processing video batches")
 
+        # Starting overall process timer
+        main_start_time = time.time()
+
         #7. Video processing in parts
         while processed_frames < total_frames:
+            batch_start_time = time.time()
+
             # Clearing CUDA memory before processing a new batch
             torch.cuda.empty_cache()
 
@@ -812,19 +1001,25 @@ class LipsyncPipeline(DiffusionPipeline):
                 del latents, mask_latents, masked_image_latents, ref_latents, decoded_latents
                 torch.cuda.empty_cache()
 
+            start_time = time.time()
             # Restoring the full video for the current batch
-            restored_frames = []
-            for i, frame in enumerate(synced_video_frames_batch):
-                if face_detected_mask_batch[i]:
-                    restored_frame = self.restore_single_frame(
-                        frame, video_frames_batch[i], boxes_batch[i], affine_matrices_batch[i]
-                    )
-                    restored_frames.append(restored_frame)
-                else:
-                    restored_frames.append(video_frames_batch[i])
+            restored_frames = self.process_frames_parallel(
+                synced_video_frames_batch,
+                video_frames_batch,
+                boxes_batch,
+                affine_matrices_batch,
+                face_detected_mask_batch
+            )
+            elapsed_time = time.time() - start_time
+            print(f"'Restoring the full video for the current batch' operation took {elapsed_time:.2f} secs")
 
             batch_output_path = os.path.join(temp_dir, f"batch_{batch_count:04d}.mp4")
+
+            start_time = time.time()
             write_video(batch_output_path, np.array(restored_frames), fps=video_fps)
+            elapsed_time = time.time() - start_time
+            print(f"'Write_video' operation took {elapsed_time:.2f} secs")
+
             part_paths.append(batch_output_path)
 
             del video_frames_batch, faces_batch, boxes_batch, affine_matrices_batch
@@ -839,12 +1034,18 @@ class LipsyncPipeline(DiffusionPipeline):
             processed_frames += current_batch_size
             print(f"Debug: processed_frames now {processed_frames}")
 
+            elapsed_time = time.time() - batch_start_time
+            print(f"'Current batch processing' operation took {elapsed_time:.2f} secs")
+
         batch_progress.close()
 
+        start_time = time.time()
         # 9. Combine all the parts of the processed video
         print("Combining processed video parts...")
         combined_video_path = os.path.join(temp_dir, "video.mp4")
         combine_video_parts(part_paths, combined_video_path)
+        elapsed_time = time.time() - start_time
+        print(f"'Combining current batch video' operation took {elapsed_time:.2f} secs")
 
         # 10. Trim the audio to the length of the video
         print("Processing audio...")
@@ -852,15 +1053,38 @@ class LipsyncPipeline(DiffusionPipeline):
         video_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
 
-        audio_samples_remain_length = int(video_frame_count / video_fps * audio_sample_rate)
-        audio_samples = audio_samples[:audio_samples_remain_length].cpu().numpy()
-        audio_output_path = os.path.join(temp_dir, "audio.wav")
-        sf.write(audio_output_path, audio_samples, audio_sample_rate)
+        # # Legacy method with lower audio quality
+        # audio_samples_remain_length = int(video_frame_count / video_fps * audio_sample_rate)
+        # audio_samples = audio_samples[:audio_samples_remain_length].cpu().numpy()
+        # audio_output_path = os.path.join(temp_dir, "audio.wav")
+        # sf.write(audio_output_path, audio_samples, audio_sample_rate)
 
+        audio_filename = os.path.basename(audio_path)
+        audio_name, audio_ext = os.path.splitext(audio_filename)
+        stereo_audio_filename = f"{audio_name}_stereo{audio_ext}"
+        stereo_audio_path = os.path.join(os.path.dirname(audio_path), stereo_audio_filename)
+
+        if not os.path.exists(stereo_audio_path):
+            print(f"Warning: Stereo audio file {stereo_audio_path} not found, using original audio")
+            stereo_audio_path = audio_path
+
+        video_duration = video_frame_count / video_fps
+
+        audio_output_path = os.path.join(temp_dir, "trimmed_audio.mp3")
+        trim_command = f"ffmpeg -y -loglevel error -i {stereo_audio_path} -t {video_duration} -c:a copy {audio_output_path}"
+        print(f"Trimming audio to match video length ({video_duration:.2f} seconds)")
+        subprocess.run(trim_command, shell=True)
+
+        start_time = time.time()
         # 11. Combining video and audio
         print("Combining video and audio...")
         command = f"ffmpeg -y -loglevel error -i {combined_video_path} -i {audio_output_path} -c:v copy -c:a aac -b:a 320k -map 0:v:0 -map 1:a:0 {video_out_path}"
         subprocess.run(command, shell=True)
+        elapsed_time = time.time() - start_time
+        print(f"'Combining video and audio' operation took {elapsed_time:.2f} secs")
+
+        elapsed_time = time.time() - main_start_time
+        print(f"All process took {elapsed_time / 60:.2f} minutes")
 
         # 12. Cleaning temporary files
         if os.path.exists(temp_dir):

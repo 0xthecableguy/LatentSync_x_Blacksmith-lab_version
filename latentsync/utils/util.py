@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+import concurrent
 import os
 import imageio
 import numpy as np
@@ -127,6 +127,30 @@ def read_video_batch(video_path: str, start_frame: int, end_frame: int):
 
 
 def combine_video_parts(part_paths: list, output_path: str):
+    if len(part_paths) > 1:
+        compatible = True
+        formats = []
+        for part in part_paths:
+            cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                   '-show_entries', 'stream=codec_name,width,height,pix_fmt',
+                   '-of', 'json', part]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            formats.append(json.loads(result.stdout))
+
+        base_format = formats[0]
+        for fmt in formats[1:]:
+            if (fmt['streams'][0]['codec_name'] != base_format['streams'][0]['codec_name'] or
+                    fmt['streams'][0]['width'] != base_format['streams'][0]['width'] or
+                    fmt['streams'][0]['height'] != base_format['streams'][0]['height'] or
+                    fmt['streams'][0]['pix_fmt'] != base_format['streams'][0]['pix_fmt']):
+                compatible = False
+                break
+
+        if not compatible:
+            print("WARNING: Parts have different formats. Better use transcoding instead of stream copy.")
+            # Add transcode function if getting formats issues
+
+    # Создаем файл списка и выполняем объединение
     list_file = "temp_file_list.txt"
     with open(list_file, "w") as f:
         for part in part_paths:
@@ -149,7 +173,7 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
 
     return audio_samples
 
-
+# # Legacy version
 # def write_video(batch_output_path, frames, fps=25):
 #     height, width = frames[0].shape[:2]
 #     fourcc = cv2.VideoWriter_fourcc(*'avc1')
@@ -160,7 +184,108 @@ def read_audio(audio_path: str, audio_sample_rate: int = 16000):
 #         out.write(frame)
 #     out.release()
 
+# # Best quality with parallel processing
+# def write_video(batch_output_path, frames, fps=25):
+#     height, width = frames[0].shape[:2]
+#
+#     temp_dir = os.path.dirname(batch_output_path)
+#     temp_frames_dir = os.path.join(temp_dir, f"temp_frames_{os.path.basename(batch_output_path).split('.')[0]}")
+#     os.makedirs(temp_frames_dir, exist_ok=True)
+#
+#     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+#         futures = []
+#         for i, frame in enumerate(frames):
+#             frame_path = os.path.join(temp_frames_dir, f"frame_{i:04d}.png")
+#             futures.append(
+#                 executor.submit(cv2.imwrite, frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+#             )
+#         for future in concurrent.futures.as_completed(futures):
+#             if future.exception() is not None:
+#                 print(f"Error processing frame: {future.exception()}")
+#
+#     frames_pattern = os.path.join(temp_frames_dir, "frame_%04d.png")
+#     command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
+#     subprocess.run(command, shell=True)
+#
+#     shutil.rmtree(temp_frames_dir)
+#
+#     return batch_output_path
 
+# # Best quality
+# def write_video(batch_output_path, frames, fps=25):
+#     height, width = frames[0].shape[:2]
+#
+#     temp_dir = os.path.dirname(batch_output_path)
+#     temp_frames_dir = os.path.join(temp_dir, f"temp_frames_{os.path.basename(batch_output_path).split('.')[0]}")
+#     os.makedirs(temp_frames_dir, exist_ok=True)
+#
+#     for i, frame in enumerate(frames):
+#         frame_path = os.path.join(temp_frames_dir, f"frame_{i:04d}.png")
+#         cv2.imwrite(frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+#
+#     frames_pattern = os.path.join(temp_frames_dir, "frame_%04d.png")
+#     command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
+#     subprocess.run(command, shell=True)
+#
+#     shutil.rmtree(temp_frames_dir)
+#
+#     return batch_output_path
+
+# # Low quality but faster processing
+# def write_video(batch_output_path, frames, fps=25):
+#     height, width = frames[0].shape[:2]
+#
+#     temp_video_path = batch_output_path
+#
+#     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+#     temp_writer = cv2.VideoWriter(temp_video_path, fourcc, fps, (width, height))
+#
+#     for frame in frames:
+#         temp_writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+#
+#     temp_writer.release()
+#
+#     final_video_path = batch_output_path.replace('.mp4', '_final.mp4')
+#     command = f"ffmpeg -y -loglevel error -i {temp_video_path} -c:v libx264 -crf 10 -preset medium {final_video_path}"
+#     subprocess.run(command, shell=True)
+#
+#     if os.path.exists(final_video_path):
+#         os.replace(final_video_path, batch_output_path)
+#
+#     return batch_output_path
+
+# # Optimal processing
+# def write_video(batch_output_path, frames, fps=25):
+#     height, width = frames[0].shape[:2]
+#
+#     temp_video_path = batch_output_path.replace('.mp4', '_temp.mp4')
+#
+#     command = [
+#         'ffmpeg', '-y', '-loglevel', 'error',
+#         '-f', 'rawvideo', '-vcodec', 'rawvideo',
+#         '-s', f'{width}x{height}', '-pix_fmt', 'rgb24',
+#         '-r', str(fps), '-i', '-',
+#         '-c:v', 'libx264', '-crf', '0', '-preset', 'medium',
+#         '-pix_fmt', 'yuv444p', temp_video_path
+#     ]
+#
+#     process = subprocess.Popen(command, stdin=subprocess.PIPE)
+#
+#     for frame in frames:
+#         process.stdin.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR).tobytes())
+#
+#     process.stdin.close()
+#     process.wait()
+#
+#     final_command = f"ffmpeg -y -loglevel error -i {temp_video_path} -c:v libx264 -crf 0 -preset medium -pix_fmt yuv444p -tune film {batch_output_path}"
+#     subprocess.run(final_command, shell=True)
+#
+#     if os.path.exists(temp_video_path):
+#         os.remove(temp_video_path)
+#
+#     return batch_output_path
+
+# With GPU processing
 def write_video(batch_output_path, frames, fps=25):
     height, width = frames[0].shape[:2]
 
@@ -168,18 +293,62 @@ def write_video(batch_output_path, frames, fps=25):
     temp_frames_dir = os.path.join(temp_dir, f"temp_frames_{os.path.basename(batch_output_path).split('.')[0]}")
     os.makedirs(temp_frames_dir, exist_ok=True)
 
-    for i, frame in enumerate(frames):
-        frame_path = os.path.join(temp_frames_dir, f"frame_{i:04d}.png")
-        cv2.imwrite(frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = []
+        for i, frame in enumerate(frames):
+            frame_path = os.path.join(temp_frames_dir, f"frame_{i:04d}.png")
+            futures.append(
+                executor.submit(cv2.imwrite, frame_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            )
+        for future in concurrent.futures.as_completed(futures):
+            if future.exception() is not None:
+                print(f"Error processing frame: {future.exception()}")
 
     frames_pattern = os.path.join(temp_frames_dir, "frame_%04d.png")
-    command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
+
+    gpu_available = False
+
+    try:
+        # Run FFmpeg to list available encoders
+        cmd = ['/usr/bin/ffmpeg', '-encoders']
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        # Check if h264_nvenc is among available encoders
+        if 'h264_nvenc' in result.stdout:
+            # Try a test encoding
+            test_cmd = [
+                '/usr/bin/ffmpeg',
+                '-f', 'lavfi',
+                '-i', 'nullsrc=s=640x480:d=1',
+                '-c:v', 'h264_nvenc',
+                '-f', 'null',
+                '-'
+            ]
+            test_result = subprocess.run(test_cmd, capture_output=True, text=True)
+
+            # If the test succeeded without errors, GPU is available
+            if test_result.returncode == 0:
+                gpu_available = True
+                print("GPU NVENC available and working")
+    except Exception as e:
+        print(f"Error checking GPU availability: {e}")
+        gpu_available = False
+
+    if gpu_available:
+        print("Using GPU (NVENC) for processing video")
+        command = f"/usr/bin/ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v h264_nvenc -preset p7 -tune hq -b:v 100M -bufsize 100M -rc vbr -rc-lookahead 32 -spatial_aq 1 -temporal_aq 1 -aq-strength 15 -nonref_p 0 -pix_fmt yuv420p {batch_output_path}"
+        # # Faster processing with a little bit lower result quality
+        # command = f"/usr/bin/ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v h264_nvenc -b:v 30M -preset slow -pix_fmt yuv420p {batch_output_path}"
+    else:
+        print("GPU (NVENC) not available, using CPU")
+        command = f"/usr/bin/ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
+
+    print(f"Starting command: {command}")
     subprocess.run(command, shell=True)
 
     shutil.rmtree(temp_frames_dir)
 
     return batch_output_path
-
 
 def init_dist(backend="nccl", **kwargs):
     """Initializes distributed environment."""
