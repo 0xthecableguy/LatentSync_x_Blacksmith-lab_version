@@ -150,10 +150,10 @@ class AlignRestore(object):
         pasted_face = inv_mask_erosion[:, :, None] * inv_restored
         total_face_area = np.sum(inv_mask_erosion)
         w_edge = int(total_face_area ** 0.5) // 20
-        erosion_radius = w_edge * 2
+        erosion_radius = w_edge * 3
         erosion_kernel_large = np.ones((erosion_radius, erosion_radius), np.uint8)
         inv_mask_center = cv2.erode(inv_mask_erosion, erosion_kernel_large)
-        blur_size = w_edge * 3
+        blur_size = w_edge * 2
         if blur_size % 2 == 0:
             blur_size += 1
         inv_soft_mask = cv2.GaussianBlur(inv_mask_center, (blur_size, blur_size), 0)
