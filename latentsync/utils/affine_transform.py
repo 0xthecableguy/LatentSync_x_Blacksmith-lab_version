@@ -153,7 +153,7 @@ class AlignRestore(object):
         erosion_radius = w_edge * 2
         erosion_kernel_large = np.ones((erosion_radius, erosion_radius), np.uint8)
         inv_mask_center = cv2.erode(inv_mask_erosion, erosion_kernel_large)
-        blur_size = w_edge * 2
+        blur_size = w_edge * 3
         if blur_size % 2 == 0:
             blur_size += 1
         inv_soft_mask = cv2.GaussianBlur(inv_mask_center, (blur_size, blur_size), 0)
