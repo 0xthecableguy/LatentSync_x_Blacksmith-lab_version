@@ -336,9 +336,8 @@ def write_video(batch_output_path, frames, fps=25):
 
     if gpu_available:
         print("Using GPU (NVENC) for processing video")
-        # Experimental hq command:
-        command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v h264_nvenc -preset p7 -tune hq -b:v 100M -bufsize 100M -rc vbr_hq -rc-lookahead 32 -spatial_aq 1 -temporal_aq 1 -aq-strength 15 -nonref_p 0 -weighted_pred 1 -pix_fmt yuv420p {batch_output_path}"
-        # # A little bit lower quality
+        command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v h264_nvenc -preset p7 -tune hq -b:v 100M -bufsize 100M -rc vbr -rc-lookahead 32 -spatial_aq 1 -temporal_aq 1 -aq-strength 15 -nonref_p 0 -pix_fmt yuv420p {batch_output_path}"
+        # # Faster processing with a little bit lower result quality
         # command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v h264_nvenc -b:v 30M -preset slow -pix_fmt yuv420p {batch_output_path}"
     else:
         print("GPU (NVENC) not available, using CPU")
