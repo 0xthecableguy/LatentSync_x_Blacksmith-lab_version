@@ -310,14 +310,14 @@ def write_video(batch_output_path, frames, fps=25):
 
     try:
         # Run FFmpeg to list available encoders
-        cmd = ['ffmpeg', '-encoders']
+        cmd = ['/usr/bin/ffmpeg', '-encoders']
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         # Check if h264_nvenc is among available encoders
         if 'h264_nvenc' in result.stdout:
             # Try a test encoding
             test_cmd = [
-                'ffmpeg',
+                '/usr/bin/ffmpeg',
                 '-f', 'lavfi',
                 '-i', 'nullsrc=s=640x480:d=1',
                 '-c:v', 'h264_nvenc',
@@ -336,12 +336,12 @@ def write_video(batch_output_path, frames, fps=25):
 
     if gpu_available:
         print("Using GPU (NVENC) for processing video")
-        command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v h264_nvenc -preset p7 -tune hq -b:v 100M -bufsize 100M -rc vbr -rc-lookahead 32 -spatial_aq 1 -temporal_aq 1 -aq-strength 15 -nonref_p 0 -pix_fmt yuv420p {batch_output_path}"
+        command = f"/usr/bin/ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v h264_nvenc -preset p7 -tune hq -b:v 100M -bufsize 100M -rc vbr -rc-lookahead 32 -spatial_aq 1 -temporal_aq 1 -aq-strength 15 -nonref_p 0 -pix_fmt yuv420p {batch_output_path}"
         # # Faster processing with a little bit lower result quality
-        # command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v h264_nvenc -b:v 30M -preset slow -pix_fmt yuv420p {batch_output_path}"
+        # command = f"/usr/bin/ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v h264_nvenc -b:v 30M -preset slow -pix_fmt yuv420p {batch_output_path}"
     else:
         print("GPU (NVENC) not available, using CPU")
-        command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
+        command = f"/usr/bin/ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
 
     print(f"Starting command: {command}")
     subprocess.run(command, shell=True)
