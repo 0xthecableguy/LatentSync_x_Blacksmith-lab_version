@@ -97,46 +97,40 @@ class AlignRestore(object):
         mask = np.ones((self.face_size[1], self.face_size[0]), dtype=np.float32)
         inv_mask = cv2.warpAffine(mask, inverse_affine, (w_up, h_up))
 
-        # Основная эрозия маски - сохраняем как в оригинале
+        # Первоначальная эрозия - как в оригинале
         erosion_kernel_small = np.ones((int(2 * self.upscale_factor), int(2 * self.upscale_factor)), np.uint8)
         inv_mask_erosion = cv2.erode(inv_mask, erosion_kernel_small)
         pasted_face = inv_mask_erosion[:, :, None] * inv_restored
 
-        # Вычисление параметров для правильного размера маски
+        # Расчет параметров для маски
         total_face_area = np.sum(inv_mask_erosion)
         w_edge = max(1, int(total_face_area ** 0.5) // 20)
 
-        # Создаем две маски для областей:
-        # 1. Центральная область (губы) - должна остаться четкой
-        # 2. Граничная область - должна иметь сильное размытие
-
-        # Для центральной области используем больший радиус эрозии
-        erosion_radius_center = w_edge * 3  # Увеличиваем для более узкой центральной области
-        erosion_kernel_large = np.ones((erosion_radius_center, erosion_radius_center), np.uint8)
+        # Сохраняем тот же размер эрозии для центральной части
+        erosion_radius = w_edge * 2
+        erosion_kernel_large = np.ones((erosion_radius, erosion_radius), np.uint8)
         inv_mask_center = cv2.erode(inv_mask_erosion, erosion_kernel_large)
 
-        # Для области перехода (граница) - используем меньшую эрозию
-        erosion_radius_edge = w_edge * 1
-        erosion_kernel_edge = np.ones((erosion_radius_edge, erosion_radius_edge), np.uint8)
-        inv_mask_edge = cv2.erode(inv_mask_erosion, erosion_kernel_edge)
+        # Значительно увеличиваем размер размытия
+        blur_size = w_edge * 6  # Увеличено с 2 до 6
+        if blur_size % 2 == 0:
+            blur_size += 1
 
-        # Создаем маску перехода (граница между центром и краем)
-        transition_mask = inv_mask_edge - inv_mask_center
+        # Применяем большее размытие
+        inv_soft_mask = cv2.GaussianBlur(inv_mask_center, (blur_size, blur_size), 0)
 
-        # Сильно размываем граничную маску
-        blur_size_edge = w_edge * 5  # Увеличенное размытие для границ
-        if blur_size_edge % 2 == 0:
-            blur_size_edge += 1
+        # Применяем дополнительное размытие к границам для более плавного перехода
+        for _ in range(2):  # Повторное размытие для еще более мягких краев
+            edge_mask = inv_soft_mask * 0.8  # Немного уменьшаем интенсивность маски
+            edge_blur = cv2.GaussianBlur(edge_mask, (blur_size, blur_size), 0)
+            # Смешиваем оригинальную размытую маску с дополнительным размытием краев
+            inv_soft_mask = np.maximum(inv_soft_mask, edge_blur)
 
-        # Размываем только граничную область
-        blurred_transition = cv2.GaussianBlur(transition_mask, (blur_size_edge, blur_size_edge), 0)
+        # Сглаживаем края маски экспоненциальной функцией для более мягкого перехода
+        # Значения близкие к 1 остаются близкими к 1, но значения меньше 0.9 быстрее стремятся к 0
+        inv_soft_mask = inv_soft_mask ** 0.8  # Делаем края более мягкими
 
-        # Создаем итоговую мягкую маску, объединяя четкую центральную область с размытой границей
-        inv_soft_mask = inv_mask_center + blurred_transition
-        inv_soft_mask = np.clip(inv_soft_mask, 0, 1)  # Убеждаемся, что значения в диапазоне [0,1]
         inv_soft_mask = inv_soft_mask[:, :, None]
-
-        # Применяем комбинированную маску
         upsample_img = inv_soft_mask * pasted_face + (1 - inv_soft_mask) * upsample_img
 
         if np.max(upsample_img) > 256:
@@ -149,7 +143,9 @@ class AlignRestore(object):
     # def restore_img(self, input_img, face, affine_matrix):
     #     h, w, _ = input_img.shape
     #     h_up, w_up = int(h * self.upscale_factor), int(w * self.upscale_factor)
+    #
     #     upsample_img = cv2.resize(input_img, (w_up, h_up), interpolation=cv2.INTER_LANCZOS4)
+    #
     #     inverse_affine = cv2.invertAffineTransform(affine_matrix)
     #     inverse_affine *= self.upscale_factor
     #     if self.upscale_factor > 1:
@@ -158,26 +154,41 @@ class AlignRestore(object):
     #         extra_offset = 0
     #     inverse_affine[:, 2] += extra_offset
     #     inv_restored = cv2.warpAffine(face, inverse_affine, (w_up, h_up), flags=cv2.INTER_LANCZOS4)
+    #
     #     mask = np.ones((self.face_size[1], self.face_size[0]), dtype=np.float32)
+    #
     #     inv_mask = cv2.warpAffine(mask, inverse_affine, (w_up, h_up))
+    #
     #     erosion_kernel_small = np.ones((int(2 * self.upscale_factor), int(2 * self.upscale_factor)), np.uint8)
     #     inv_mask_erosion = cv2.erode(inv_mask, erosion_kernel_small)
+    #
     #     pasted_face = inv_mask_erosion[:, :, None] * inv_restored
+    #
     #     total_face_area = np.sum(inv_mask_erosion)
     #     w_edge = int(total_face_area ** 0.5) // 20
     #     erosion_radius = w_edge * 2
     #     erosion_kernel_large = np.ones((erosion_radius, erosion_radius), np.uint8)
+    #
     #     inv_mask_center = cv2.erode(inv_mask_erosion, erosion_kernel_large)
+    #
     #     blur_size = w_edge * 2
     #     if blur_size % 2 == 0:
     #         blur_size += 1
+    #     blur_size = max(blur_size, 21)
+    #
     #     inv_soft_mask = cv2.GaussianBlur(inv_mask_center, (blur_size, blur_size), 0)
+    #     inv_soft_mask = np.clip(inv_soft_mask, 0.0, 1.0)
+    #     inv_soft_mask = inv_soft_mask ** 1.5
+    #
     #     inv_soft_mask = inv_soft_mask[:, :, None]
+    #
     #     upsample_img = inv_soft_mask * pasted_face + (1 - inv_soft_mask) * upsample_img
+    #
     #     if np.max(upsample_img) > 256:
     #         upsample_img = upsample_img.astype(np.uint16)
     #     else:
     #         upsample_img = upsample_img.astype(np.uint8)
+    #
     #     return upsample_img
 
 
