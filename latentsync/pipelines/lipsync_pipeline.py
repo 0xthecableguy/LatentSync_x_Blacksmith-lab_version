@@ -457,6 +457,7 @@ class LipsyncPipeline(DiffusionPipeline):
             # Returning the original frame in case of an error
             return original_frame
 
+    # # Legacy method
     # def restore_video(self, faces, video_frames, boxes, affine_matrices):
     #     video_frames = video_frames[: faces.shape[0]]
     #     out_frames = []
@@ -534,11 +535,14 @@ class LipsyncPipeline(DiffusionPipeline):
         whisper_feature = self.audio_encoder.audio2feat(audio_path)
         whisper_chunks = self.audio_encoder.feature2chunks(feature_array=whisper_feature, fps=video_fps)
         print(f"Audio chunks created for {video_fps} FPS")
-        audio_samples = read_audio(audio_path)
 
+        # # Legacy. There is no need to use low sampling rate in final video-result
+        # audio_samples = read_audio(audio_path)
+
+        # 6. Converting video to 25 FPS only if needed
+        # Determining process id to use separate dirs for parallel processing
         run_id = str(uuid.uuid4())[:8]
 
-        # Converting video to 25 FPS only if needed
         temp_fps_dir = f"temp_fps_conversion_{run_id}"
         if os.path.exists(temp_fps_dir):
             shutil.rmtree(temp_fps_dir)
@@ -558,16 +562,63 @@ class LipsyncPipeline(DiffusionPipeline):
         else:
             print(f"Converting video from {current_fps} FPS to 25 FPS")
 
-            # command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p {temp_video_path}"
+            gpu_available = False
 
-            # # Alternative (the same but without audio)
-            # command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -an {temp_video_path}"
+            try:
+                # Run FFmpeg to list available encoders
+                cmd = ['ffmpeg', '-encoders']
+                result = subprocess.run(cmd, capture_output=True, text=True)
 
-            # Alternative (lower quality but faster)
-            command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 10 -preset medium -an {temp_video_path}"
+                # Check if h264_nvenc is among available encoders
+                if 'h264_nvenc' in result.stdout:
+                    # Try a test encoding
+                    test_cmd = [
+                        'ffmpeg',
+                        '-f', 'lavfi',
+                        '-i', 'nullsrc=s=640x480:d=1',
+                        '-c:v', 'h264_nvenc',
+                        '-f', 'null',
+                        '-'
+                    ]
+                    test_result = subprocess.run(test_cmd, capture_output=True, text=True)
+
+                    if test_result.returncode == 0:
+                        gpu_available = True
+                        print("GPU NVENC available and will be used for FPS conversion")
+            except Exception as e:
+                print(f"Error checking GPU availability: {e}")
+                gpu_available = False
+
+            if gpu_available:
+                # GPU version with maximum quality settings
+                command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v h264_nvenc -preset p7 -tune hq -b:v 100M -bufsize 100M -rc vbr_hq -rc-lookahead 32 -spatial_aq 1 -temporal_aq 1 -aq-strength 15 -nonref_p 0 -weighted_pred 1 -pix_fmt yuv420p -an {temp_video_path}"
+            else:
+                # CPU version with maximum quality settings
+                command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -an {temp_video_path}"
 
             print(f"Running conversion: {command}")
-            subprocess.run(command, shell=True)
+            try:
+                subprocess.run(command, shell=True, check=True)
+
+                # Verify the file was created and has correct FPS
+                if not os.path.exists(temp_video_path):
+                    raise Exception(f"Output file not created: {temp_video_path}")
+
+                # Check if conversion succeeded
+                check_cap = cv2.VideoCapture(temp_video_path)
+                actual_fps = round(check_cap.get(cv2.CAP_PROP_FPS))
+                check_cap.release()
+
+                if actual_fps != 25:
+                    raise Exception(f"FPS conversion failed. Expected 25 FPS, got {actual_fps} FPS")
+
+            except Exception as e:
+                print(f"Error during GPU conversion: {e}")
+                if gpu_available:
+                    print("Falling back to CPU for conversion")
+                    # CPU fallback with maximum quality
+                    fallback_command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -an {temp_video_path}"
+                    subprocess.run(fallback_command, shell=True, check=True)
 
         # Update video path for all subsequent operations and FPS for subsequent calculations
         video_path = temp_video_path
@@ -605,6 +656,7 @@ class LipsyncPipeline(DiffusionPipeline):
         total_batches = math.ceil(total_frames / batch_frames)
         batch_progress = tqdm.tqdm(total=total_batches, desc="Processing video batches")
 
+        # Starting overall process timer
         main_start_time = time.time()
 
         #7. Video processing in parts
@@ -977,7 +1029,7 @@ class LipsyncPipeline(DiffusionPipeline):
         video_frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
 
-        # # Legacy method
+        # # Legacy method with lower audio quality
         # audio_samples_remain_length = int(video_frame_count / video_fps * audio_sample_rate)
         # audio_samples = audio_samples[:audio_samples_remain_length].cpu().numpy()
         # audio_output_path = os.path.join(temp_dir, "audio.wav")

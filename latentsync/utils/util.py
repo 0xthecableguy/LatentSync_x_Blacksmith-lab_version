@@ -127,6 +127,30 @@ def read_video_batch(video_path: str, start_frame: int, end_frame: int):
 
 
 def combine_video_parts(part_paths: list, output_path: str):
+    if len(part_paths) > 1:
+        compatible = True
+        formats = []
+        for part in part_paths:
+            cmd = ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                   '-show_entries', 'stream=codec_name,width,height,pix_fmt',
+                   '-of', 'json', part]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            formats.append(json.loads(result.stdout))
+
+        base_format = formats[0]
+        for fmt in formats[1:]:
+            if (fmt['streams'][0]['codec_name'] != base_format['streams'][0]['codec_name'] or
+                    fmt['streams'][0]['width'] != base_format['streams'][0]['width'] or
+                    fmt['streams'][0]['height'] != base_format['streams'][0]['height'] or
+                    fmt['streams'][0]['pix_fmt'] != base_format['streams'][0]['pix_fmt']):
+                compatible = False
+                break
+
+        if not compatible:
+            print("WARNING: Parts have different formats. Better use transcoding instead of stream copy.")
+            # Add transcode function if getting formats issues
+
+    # Создаем файл списка и выполняем объединение
     list_file = "temp_file_list.txt"
     with open(list_file, "w") as f:
         for part in part_paths:
@@ -282,18 +306,42 @@ def write_video(batch_output_path, frames, fps=25):
 
     frames_pattern = os.path.join(temp_frames_dir, "frame_%04d.png")
 
-    try:
-        check_cmd = "ffmpeg -encoders | grep nvenc"
-        result = subprocess.run(check_cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    gpu_available = False
 
-        if "nvenc" in result.stdout:
-            print("Using GPU (NVENC) for processing video")
-            command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v h264_nvenc -b:v 30M -preset slow -rc:v constqp -qp 0 -pix_fmt yuv420p {batch_output_path}"
-        else:
-            print("GPU (NVENC) not found, CPU fallback")
-            command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
+    try:
+        # Run FFmpeg to list available encoders
+        cmd = ['ffmpeg', '-encoders']
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        # Check if h264_nvenc is among available encoders
+        if 'h264_nvenc' in result.stdout:
+            # Try a test encoding
+            test_cmd = [
+                'ffmpeg',
+                '-f', 'lavfi',
+                '-i', 'nullsrc=s=640x480:d=1',
+                '-c:v', 'h264_nvenc',
+                '-f', 'null',
+                '-'
+            ]
+            test_result = subprocess.run(test_cmd, capture_output=True, text=True)
+
+            # If the test succeeded without errors, GPU is available
+            if test_result.returncode == 0:
+                gpu_available = True
+                print("GPU NVENC available and working")
     except Exception as e:
         print(f"Error checking GPU availability: {e}")
+        gpu_available = False
+
+    if gpu_available:
+        print("Using GPU (NVENC) for processing video")
+        # Experimental hq command:
+        command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v h264_nvenc -preset p7 -tune hq -b:v 100M -bufsize 100M -rc vbr_hq -rc-lookahead 32 -spatial_aq 1 -temporal_aq 1 -aq-strength 15 -nonref_p 0 -weighted_pred 1 -pix_fmt yuv420p {batch_output_path}"
+        # # A little bit lower quality
+        # command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v h264_nvenc -b:v 30M -preset slow -pix_fmt yuv420p {batch_output_path}"
+    else:
+        print("GPU (NVENC) not available, using CPU")
         command = f"ffmpeg -y -loglevel error -framerate {fps} -i {frames_pattern} -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -qp 0 -tune film {batch_output_path}"
 
     print(f"Starting command: {command}")
