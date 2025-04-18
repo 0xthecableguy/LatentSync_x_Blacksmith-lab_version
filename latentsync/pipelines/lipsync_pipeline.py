@@ -590,14 +590,14 @@ class LipsyncPipeline(DiffusionPipeline):
 
             try:
                 # Run FFmpeg to list available encoders
-                cmd = ['ffmpeg', '-encoders']
+                cmd = ['/usr/bin/ffmpeg', '-encoders']
                 result = subprocess.run(cmd, capture_output=True, text=True)
 
                 # Check if h264_nvenc is among available encoders
                 if 'h264_nvenc' in result.stdout:
                     # Try a test encoding
                     test_cmd = [
-                        'ffmpeg',
+                        '/usr/bin/ffmpeg',
                         '-f', 'lavfi',
                         '-i', 'nullsrc=s=640x480:d=1',
                         '-c:v', 'h264_nvenc',
@@ -615,7 +615,7 @@ class LipsyncPipeline(DiffusionPipeline):
 
             if gpu_available:
                 # GPU version with maximum quality settings
-                command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v h264_nvenc -preset p7 -tune hq -b:v 100M -bufsize 100M -rc vbr -rc-lookahead 32 -spatial_aq 1 -temporal_aq 1 -aq-strength 15 -nonref_p 0 -pix_fmt yuv420p -an {temp_video_path}"
+                command = f"/usr/bin/ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v h264_nvenc -preset p7 -tune hq -b:v 100M -bufsize 100M -rc vbr -rc-lookahead 32 -spatial_aq 1 -temporal_aq 1 -aq-strength 15 -nonref_p 0 -pix_fmt yuv420p -an {temp_video_path}"
             else:
                 # CPU version with maximum quality settings
                 command = f"ffmpeg -loglevel error -y -nostdin -i {video_path} -r 25 -c:v libx264 -crf 0 -preset veryslow -pix_fmt yuv444p -an {temp_video_path}"
