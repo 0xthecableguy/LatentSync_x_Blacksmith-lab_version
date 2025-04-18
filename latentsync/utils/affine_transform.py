@@ -114,6 +114,7 @@ class AlignRestore(object):
             upsample_img = upsample_img.astype(np.uint8)
         return upsample_img
 
+    # # Experimental
     # def restore_img(self, input_img, face, affine_matrix):
     #     h, w, _ = input_img.shape
     #     h_up, w_up = int(h * self.upscale_factor), int(w * self.upscale_factor)
