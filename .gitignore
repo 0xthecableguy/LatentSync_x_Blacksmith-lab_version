@@ -51,3 +51,4 @@ wandb/
 
 # local
 /reserve/
+parallel_inference.sh
