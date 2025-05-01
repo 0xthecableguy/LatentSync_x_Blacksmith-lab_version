@@ -1,4 +1,4 @@
-<h1 align="center">LatentSync</h1>
+<h1 align="center">LatentSync | Blacksmith Lab edition</h1>
 
 <div align="center">
 
@@ -8,6 +8,42 @@
 <a href="https://replicate.com/lucataco/latentsync"><img src="https://replicate.com/lucataco/latentsync/badge" alt="Replicate"></a>
 
 </div>
+
+> ⚠️ **Note**: This is a fork of the original [LatentSync](https://github.com/ByteDance/LatentSync) project.  
+> This version includes independent modifications maintained by [Blacksmith Lab](https://github.com/theblacksmithlab).  
+> The original license (Apache 2.0) applies. See `LICENSE` for details.
+
+---
+
+## 🛠 Modifications in The Fork
+
+This fork introduces the following changes compared to the original [LatentSync](https://github.com/ByteDance/LatentSync):
+
+- Achieved output video quality that closely matches the original input
+
+- Enabled GPU acceleration (if available) to speed up processing of high-resolution video
+
+- Optimized RAM usage via batch-wise video processing
+
+- Added support for processing long videos without high hardware requirements
+
+- Various code-level optimizations to support the new processing pipeline
+
+
+> ⚠️ Note: This fork focuses exclusively on the video processing pipeline.
+> Model training functionality has not been tested and is used at your own risk.
+
+**Tested configurations:**
+
+NVIDIA 4090 + 64 GB RAM — excellent performance
+
+NVIDIA 3080/3090 + 32 GB RAM — acceptable, but significantly slower
+
+We welcome your questions and suggestions — feel free to open an issue! 🤝
+
+Maintained and extended by [Blacksmith Lab](https://github.com/theblacksmithlab)
+
+---
 
 ## 🔥 Updates
 
