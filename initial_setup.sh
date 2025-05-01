@@ -30,8 +30,8 @@ cd ~/projects/python
 
 # Clone the repository
 echo "Cloning repository..."
-git clone https://github.com/0xthecableguy/LatentSync_x_Blacksmith-lab_version.git
-cd LatentSync_x_Blacksmith-lab_version
+git clone https://github.com/theblacksmithlab/LatentSync-BSL.git
+cd LatentSync-BSL
 git fetch --all
 
 # Download and install Miniconda
@@ -43,7 +43,7 @@ rm miniconda.sh
 
 # Copy the fixed setup_env.sh
 echo "Preparing setup script..."
-cd ~/projects/python/LatentSync_x_Blacksmith-lab_version
+cd ~/projects/python/LatentSync-BSL
 cat > tmp_setup_script.sh << 'EOL'
 #!/bin/bash
 
