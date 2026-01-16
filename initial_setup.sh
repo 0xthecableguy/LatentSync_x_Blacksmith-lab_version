@@ -82,18 +82,54 @@ $PIP_BIN install huggingface_hub
 # Set path to huggingface-cli
 HF_CLI=~/miniconda3/envs/latentsync/bin/huggingface-cli
 
-# Download all the checkpoints from HuggingFace
-echo "Downloading models from HuggingFace..."
-$HF_CLI download ByteDance/LatentSync-1.5 --local-dir checkpoints --exclude "*.git*" "README.md"
+# Download only the models needed for inference from HuggingFace
+echo "Downloading models for inference from HuggingFace..."
+mkdir -p checkpoints/whisper
+mkdir -p checkpoints/auxiliary
 
-# Soft links for the auxiliary models
-echo "Creating soft links for models..."
+# Download only the inference models
+$HF_CLI download ByteDance/LatentSync-1.5 --local-dir checkpoints --include "latentsync_unet.pt" "whisper/tiny.pt"
+
+# In case the specific file download fails, here's an alternative using wget
+if [ ! -f "checkpoints/latentsync_unet.pt" ]; then
+    echo "Trying alternative download method for latentsync_unet.pt..."
+    wget -q https://huggingface.co/ByteDance/LatentSync-1.5/resolve/main/latentsync_unet.pt -O checkpoints/latentsync_unet.pt
+fi
+
+if [ ! -f "checkpoints/whisper/tiny.pt" ]; then
+    echo "Trying alternative download method for whisper/tiny.pt..."
+    wget -q https://huggingface.co/ByteDance/LatentSync-1.5/resolve/main/whisper/tiny.pt -O checkpoints/whisper/tiny.pt
+fi
+
+# Download only the required auxiliary models for inference
+echo "Downloading required auxiliary models..."
 mkdir -p ~/.cache/torch/hub/checkpoints
+
+# These files are still needed for face detection and alignment
+wget -q https://huggingface.co/ByteDance/LatentSync-1.5/resolve/main/auxiliary/2DFAN4-cd938726ad.zip -O checkpoints/auxiliary/2DFAN4-cd938726ad.zip
+wget -q https://huggingface.co/ByteDance/LatentSync-1.5/resolve/main/auxiliary/s3fd-619a316812.pth -O checkpoints/auxiliary/s3fd-619a316812.pth
+wget -q https://huggingface.co/ByteDance/LatentSync-1.5/resolve/main/auxiliary/vgg16-397923af.pth -O checkpoints/auxiliary/vgg16-397923af.pth
+
+# Create soft links for the auxiliary models
+echo "Creating soft links for models..."
 ln -sf $(pwd)/checkpoints/auxiliary/2DFAN4-cd938726ad.zip ~/.cache/torch/hub/checkpoints/2DFAN4-cd938726ad.zip
 ln -sf $(pwd)/checkpoints/auxiliary/s3fd-619a316812.pth ~/.cache/torch/hub/checkpoints/s3fd-619a316812.pth
 ln -sf $(pwd)/checkpoints/auxiliary/vgg16-397923af.pth ~/.cache/torch/hub/checkpoints/vgg16-397923af.pth
 
 echo "Setup is complete!"
+
+## Download all the checkpoints from HuggingFace [FULL VERSION]
+#echo "Downloading models from HuggingFace..."
+#$HF_CLI download ByteDance/LatentSync-1.5 --local-dir checkpoints --exclude "*.git*" "README.md"
+#
+## Soft links for the auxiliary models
+#echo "Creating soft links for models..."
+#mkdir -p ~/.cache/torch/hub/checkpoints
+#ln -sf $(pwd)/checkpoints/auxiliary/2DFAN4-cd938726ad.zip ~/.cache/torch/hub/checkpoints/2DFAN4-cd938726ad.zip
+#ln -sf $(pwd)/checkpoints/auxiliary/s3fd-619a316812.pth ~/.cache/torch/hub/checkpoints/s3fd-619a316812.pth
+#ln -sf $(pwd)/checkpoints/auxiliary/vgg16-397923af.pth ~/.cache/torch/hub/checkpoints/vgg16-397923af.pth
+#
+#echo "Setup is complete!"
 EOL
 
 chmod +x tmp_setup_script.sh
